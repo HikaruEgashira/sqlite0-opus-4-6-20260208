@@ -508,3 +508,45 @@ test "parse DROP TABLE" {
         else => return error.UnexpectedToken,
     }
 }
+
+test "parse SELECT with ORDER BY" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT * FROM users ORDER BY id DESC;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            try std.testing.expectEqualStrings("users", sel.table_name);
+            try std.testing.expect(sel.order_by != null);
+            try std.testing.expectEqualStrings("id", sel.order_by.?.column);
+            try std.testing.expect(sel.order_by.?.is_desc);
+            try std.testing.expectEqual(@as(?u64, null), sel.limit);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse SELECT with LIMIT OFFSET" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT * FROM users LIMIT 10 OFFSET 5;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            try std.testing.expectEqual(@as(?u64, 10), sel.limit);
+            try std.testing.expectEqual(@as(?u64, 5), sel.offset);
+            try std.testing.expectEqual(@as(?OrderByClause, null), sel.order_by);
+        },
+        else => return error.UnexpectedToken,
+    }
+}

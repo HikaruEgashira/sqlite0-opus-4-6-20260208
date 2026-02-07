@@ -288,3 +288,14 @@ test "tokenize DELETE UPDATE DROP" {
     try std.testing.expectEqual(TokenType.kw_table, t.next().type);
     try std.testing.expectEqual(TokenType.eof, t.next().type);
 }
+
+test "tokenize ORDER BY LIMIT OFFSET" {
+    var t = Tokenizer.init("ORDER BY ASC DESC LIMIT OFFSET");
+    try std.testing.expectEqual(TokenType.kw_order, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_by, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_asc, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_desc, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_limit, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_offset, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}

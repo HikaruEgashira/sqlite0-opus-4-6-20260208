@@ -46,14 +46,10 @@ fn compareRowsByValue(a: Value, b: Value) std.math.Order {
 pub const RowComparator = struct {
     col_idx: usize,
     is_desc: bool,
-    allocator: std.mem.Allocator,
 
     pub fn compare(ctx: @This(), a: Row, b: Row) bool {
-        const a_val = a.values[ctx.col_idx];
-        const b_val = b.values[ctx.col_idx];
-        const ord = compareRowsByValue(a_val, b_val);
-        const result = if (ctx.is_desc) ord == .gt else ord == .lt;
-        return result;
+        const ord = compareRowsByValue(a.values[ctx.col_idx], b.values[ctx.col_idx]);
+        return if (ctx.is_desc) ord == .gt else ord == .lt;
     }
 };
 
@@ -258,26 +254,20 @@ pub const Database = struct {
                         const col_idx = table.findColumnIndex(order_by.column) orelse {
                             return .{ .err = "column not found" };
                         };
-                        const ctx = RowComparator{ .col_idx = col_idx, .is_desc = order_by.is_desc, .allocator = self.allocator };
+                        const ctx = RowComparator{ .col_idx = col_idx, .is_desc = order_by.is_desc };
                         std.mem.sort(Row, matching_rows.items, ctx, RowComparator.compare);
                     }
 
                     // Apply LIMIT and OFFSET
                     const offset_val = sel.offset orelse 0;
-                    var final_count = matching_rows.items.len;
-                    if (sel.limit) |limit_val| {
-                        if (offset_val < matching_rows.items.len) {
-                            final_count = @min(limit_val, matching_rows.items.len - offset_val);
-                        } else {
-                            final_count = 0;
-                        }
-                    } else if (offset_val > 0) {
-                        if (offset_val < matching_rows.items.len) {
-                            final_count = matching_rows.items.len - offset_val;
-                        } else {
-                            final_count = 0;
-                        }
-                    }
+                    const remaining = if (offset_val < matching_rows.items.len)
+                        matching_rows.items.len - offset_val
+                    else
+                        0;
+                    const final_count = if (sel.limit) |limit_val|
+                        @min(limit_val, remaining)
+                    else
+                        remaining;
 
                     if (sel.columns.len == 0) {
                         // SELECT * — copy matched rows to projected storage
