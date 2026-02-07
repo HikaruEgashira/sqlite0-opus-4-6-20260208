@@ -1,15 +1,20 @@
 # 開発アイデア
 
 ## SQLサポート拡張
-- WHERE句の実装（比較演算子: =, <, >, <=, >=, !=）
-- DELETE文
-- UPDATE文
-- DROP TABLE文
+- ~~WHERE句の実装（比較演算子: =, <, >, <=, >=, !=）~~ ✓
+- ~~DELETE文~~ ✓
+- ~~UPDATE文~~ ✓
+- ~~DROP TABLE文~~ ✓
+- ~~ORDER BY / GROUP BY~~ ✓
+- ~~集約関数 (COUNT, SUM, AVG, MIN, MAX)~~ ✓
+- ~~LIMIT / OFFSET~~ ✓
 - JOIN (INNER JOIN, LEFT JOIN)
-- ORDER BY / GROUP BY
-- 集約関数 (COUNT, SUM, AVG, MIN, MAX)
-- LIMIT / OFFSET
+- WHERE句の拡張（AND/OR/括弧）
+- サブクエリ
+- HAVING句
+- DISTINCT
 - NULL値の適切なハンドリング
+- ALTER TABLE
 
 ## ストレージ
 - B-Tree ベースのページ管理
