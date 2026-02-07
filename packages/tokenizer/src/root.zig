@@ -47,6 +47,7 @@ pub const TokenType = enum {
     kw_rename,
     kw_to,
     kw_index,
+    kw_in,
 
     // Literals
     integer_literal,
@@ -233,6 +234,7 @@ pub const Tokenizer = struct {
             .{ "RENAME", TokenType.kw_rename },
             .{ "TO", TokenType.kw_to },
             .{ "INDEX", TokenType.kw_index },
+            .{ "IN", TokenType.kw_in },
         };
 
         inline for (keywords) |entry| {

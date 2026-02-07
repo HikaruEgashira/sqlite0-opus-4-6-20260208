@@ -10,7 +10,7 @@
 - ~~LIMIT / OFFSET~~ ✓
 - ~~JOIN (INNER JOIN, LEFT JOIN)~~ ✓
 - ~~WHERE句の拡張（AND/OR）~~ ✓
-- サブクエリ
+- ~~サブクエリ~~ ✓
 - ~~HAVING句~~ ✓
 - ~~DISTINCT~~ ✓
 - ~~NULL値の適切なハンドリング~~ ✓

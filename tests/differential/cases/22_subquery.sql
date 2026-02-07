@@ -1,0 +1,14 @@
+CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT);
+INSERT INTO departments VALUES (1, 'engineering');
+INSERT INTO departments VALUES (2, 'sales');
+INSERT INTO departments VALUES (3, 'marketing');
+CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, dept_id INTEGER, salary INTEGER);
+INSERT INTO employees VALUES (1, 'alice', 1, 100);
+INSERT INTO employees VALUES (2, 'bob', 2, 200);
+INSERT INTO employees VALUES (3, 'charlie', 1, 150);
+INSERT INTO employees VALUES (4, 'dave', 3, 120);
+INSERT INTO employees VALUES (5, 'eve', 2, 180);
+SELECT * FROM employees WHERE dept_id IN (SELECT id FROM departments WHERE name = 'engineering');
+SELECT * FROM employees WHERE salary = (SELECT MAX(salary) FROM employees);
+SELECT * FROM employees WHERE salary > (SELECT AVG(salary) FROM employees);
+SELECT * FROM employees WHERE dept_id IN (SELECT id FROM departments);

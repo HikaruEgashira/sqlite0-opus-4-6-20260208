@@ -30,6 +30,7 @@ pub const CompOp = enum {
     ge,
     is_null,
     is_not_null,
+    in_subquery, // WHERE col IN (SELECT ...)
 };
 
 pub const LogicOp = enum {
@@ -41,12 +42,14 @@ pub const WhereCondition = struct {
     column: []const u8,
     op: CompOp,
     value: []const u8,
+    subquery_sql: ?[]const u8 = null, // SQL text for subquery (IN / scalar)
 };
 
 pub const WhereClause = struct {
     column: []const u8,
     op: CompOp,
     value: []const u8,
+    subquery_sql: ?[]const u8 = null, // SQL text for subquery
     // Additional conditions connected by AND/OR
     extra: []const WhereCondition,
     connectors: []const LogicOp,
@@ -528,6 +531,39 @@ pub const Parser = struct {
         };
     }
 
+    fn extractSubquerySQL(self: *Parser) ParseError![]const u8 {
+        // We're positioned after '(' and expect SELECT ... )
+        // Capture token range as source text
+        const start_tok = self.peek();
+        if (start_tok.type != .kw_select) return ParseError.UnexpectedToken;
+
+        // Find the source range: from SELECT to the token before ')'
+        const start_ptr = start_tok.lexeme.ptr;
+        // Skip tokens until matching ')'
+        var depth: usize = 0;
+        while (self.peek().type != .eof) {
+            if (self.peek().type == .lparen) depth += 1;
+            if (self.peek().type == .rparen) {
+                if (depth == 0) break;
+                depth -= 1;
+            }
+            _ = self.advance();
+        }
+        // Current token should be ')'
+        if (self.peek().type != .rparen) return ParseError.UnexpectedToken;
+        // Get the last token before ')'
+        const prev_tok = self.tokens[self.pos - 1];
+        const end_ptr = prev_tok.lexeme.ptr + prev_tok.lexeme.len;
+        const sql_len = @intFromPtr(end_ptr) - @intFromPtr(start_ptr);
+        const sql = start_ptr[0..sql_len];
+        _ = self.advance(); // consume ')'
+        // Append semicolon for the subquery SQL to be parseable
+        var buf = self.allocator.alloc(u8, sql.len + 1) catch return ParseError.OutOfMemory;
+        @memcpy(buf[0..sql.len], sql);
+        buf[sql.len] = ';';
+        return buf;
+    }
+
     fn parseWhereCondition(self: *Parser) ParseError!WhereCondition {
         const col_tok = try self.expect(.identifier);
         // Check for IS NULL / IS NOT NULL
@@ -541,7 +577,23 @@ pub const Parser = struct {
             _ = try self.expect(.kw_null);
             return .{ .column = col_tok.lexeme, .op = .is_null, .value = "" };
         }
+        // Check for IN (SELECT ...)
+        if (self.peek().type == .kw_in) {
+            _ = self.advance();
+            _ = try self.expect(.lparen);
+            const sql = try self.extractSubquerySQL();
+            return .{ .column = col_tok.lexeme, .op = .in_subquery, .value = "", .subquery_sql = sql };
+        }
         const op = try self.parseCompOp();
+        // Check for scalar subquery: op (SELECT ...)
+        if (self.peek().type == .lparen) {
+            const next_pos = self.pos + 1;
+            if (next_pos < self.tokens.len and self.tokens[next_pos].type == .kw_select) {
+                _ = self.advance(); // consume '('
+                const sql = try self.extractSubquerySQL();
+                return .{ .column = col_tok.lexeme, .op = op, .value = "", .subquery_sql = sql };
+            }
+        }
         const val_tok = self.advance();
         switch (val_tok.type) {
             .integer_literal, .string_literal, .identifier => {},
@@ -573,6 +625,7 @@ pub const Parser = struct {
             .column = first.column,
             .op = first.op,
             .value = first.value,
+            .subquery_sql = first.subquery_sql,
             .extra = extra.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             .connectors = connectors.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
         };

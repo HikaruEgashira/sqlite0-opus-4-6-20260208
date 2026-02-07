@@ -8,8 +8,8 @@
 - [x] ALTER TABLE (ADD COLUMN, RENAME TO)
 - [x] CREATE INDEX (構文サポート、メタデータのみ)
 
-### 未実装
-- [ ] サブクエリ
+### 完了 (Phase 4)
+- [x] サブクエリ (IN / スカラー)
 
 ## 次のタスク
 - B-Treeストレージの設計

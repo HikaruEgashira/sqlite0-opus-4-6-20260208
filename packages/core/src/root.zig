@@ -85,6 +85,8 @@ pub const Table = struct {
         // Handle IS NULL / IS NOT NULL
         if (op == .is_null) return val == .null_val;
         if (op == .is_not_null) return val != .null_val;
+        // in_subquery should be resolved before reaching here
+        if (op == .in_subquery) return false;
         const where_val = parseRawValue(value);
         return compareValues(val, where_val, op);
     }
@@ -116,8 +118,8 @@ pub const Table = struct {
     fn compareValues(a: Value, b: Value, op: CompOp) bool {
         // NULL comparisons: any comparison involving NULL returns false (SQL standard)
         if (a == .null_val or b == .null_val) return false;
-        // IS NULL / IS NOT NULL handled in matchesSingleCondition
-        if (op == .is_null or op == .is_not_null) return false;
+        // IS NULL / IS NOT NULL / in_subquery handled elsewhere
+        if (op == .is_null or op == .is_not_null or op == .in_subquery) return false;
 
         // Integer vs Integer
         if (a == .integer and b == .integer) {
@@ -128,7 +130,7 @@ pub const Table = struct {
                 .le => a.integer <= b.integer,
                 .gt => a.integer > b.integer,
                 .ge => a.integer >= b.integer,
-                .is_null, .is_not_null => unreachable,
+                .is_null, .is_not_null, .in_subquery => unreachable,
             };
         }
         // Text vs Text
@@ -141,10 +143,42 @@ pub const Table = struct {
                 .le => ord == .lt or ord == .eq,
                 .gt => ord == .gt,
                 .ge => ord == .gt or ord == .eq,
-                .is_null, .is_not_null => unreachable,
+                .is_null, .is_not_null, .in_subquery => unreachable,
             };
         }
-        // Mismatched types: only eq/ne are meaningful
+        // Mismatched types: try numeric coercion (e.g., text "150.0" vs integer 150)
+        if (a == .text and b == .integer) {
+            const f_a = std.fmt.parseFloat(f64, a.text) catch return switch (op) {
+                .ne => true,
+                else => false,
+            };
+            const f_b: f64 = @floatFromInt(b.integer);
+            return switch (op) {
+                .eq => f_a == f_b,
+                .ne => f_a != f_b,
+                .lt => f_a < f_b,
+                .le => f_a <= f_b,
+                .gt => f_a > f_b,
+                .ge => f_a >= f_b,
+                .is_null, .is_not_null, .in_subquery => false,
+            };
+        }
+        if (a == .integer and b == .text) {
+            const f_a: f64 = @floatFromInt(a.integer);
+            const f_b = std.fmt.parseFloat(f64, b.text) catch return switch (op) {
+                .ne => true,
+                else => false,
+            };
+            return switch (op) {
+                .eq => f_a == f_b,
+                .ne => f_a != f_b,
+                .lt => f_a < f_b,
+                .le => f_a <= f_b,
+                .gt => f_a > f_b,
+                .ge => f_a >= f_b,
+                .is_null, .is_not_null, .in_subquery => false,
+            };
+        }
         return switch (op) {
             .ne => true,
             else => false,
@@ -648,7 +682,102 @@ pub const Database = struct {
         return .{ .rows = proj_rows };
     }
 
-    pub fn execute(self: *Database, sql: []const u8) !ExecuteResult {
+    fn executeSubquery(self: *Database, subquery_sql: []const u8) !?[]const Value {
+        // Save and restore projected state
+        const saved_rows = self.projected_rows;
+        const saved_values = self.projected_values;
+        const saved_texts = self.projected_texts;
+        self.projected_rows = null;
+        self.projected_values = null;
+        self.projected_texts = null;
+
+        const result = try self.execute(subquery_sql);
+
+        // Collect first column values from result (deep copy text values before freeing)
+        var values: ?[]Value = null;
+        switch (result) {
+            .rows => |rows| {
+                if (rows.len > 0) {
+                    var vals = try self.allocator.alloc(Value, rows.len);
+                    for (rows, 0..) |row, i| {
+                        const v = row.values[0];
+                        vals[i] = if (v == .text)
+                            .{ .text = try dupeStr(self.allocator, v.text) }
+                        else
+                            v;
+                    }
+                    values = vals;
+                }
+            },
+            else => {},
+        }
+
+        // Free subquery projected data
+        self.freeProjected();
+        // Restore outer query projected state
+        self.projected_rows = saved_rows;
+        self.projected_values = saved_values;
+        self.projected_texts = saved_texts;
+
+        return values;
+    }
+
+    fn matchesConditionWithSubquery(self: *Database, table: *const Table, row: Row, column: []const u8, op: CompOp, value: []const u8, subquery_sql: ?[]const u8) !bool {
+        if (subquery_sql) |sq| {
+            const sub_values = try self.executeSubquery(sq);
+            defer if (sub_values) |sv| {
+                // Free duplicated text values
+                for (sv) |v| {
+                    if (v == .text) self.allocator.free(v.text);
+                }
+                self.allocator.free(sv);
+            };
+
+            if (sub_values == null) return false;
+            const sv = sub_values.?;
+
+            if (op == .in_subquery) {
+                // IN: check if row value matches any subquery result
+                const col_idx = table.findColumnIndex(column) orelse return false;
+                const row_val = row.values[col_idx];
+                for (sv) |sub_val| {
+                    if (Table.compareValues(row_val, sub_val, .eq)) return true;
+                }
+                return false;
+            } else {
+                // Scalar subquery: use first result value
+                if (sv.len == 0) return false;
+                const col_idx = table.findColumnIndex(column) orelse return false;
+                return Table.compareValues(row.values[col_idx], sv[0], op);
+            }
+        }
+        return table.matchesSingleCondition(row, column, op, value);
+    }
+
+    fn matchesWhereWithSubquery(self: *Database, table: *const Table, row: Row, where: WhereClause) !bool {
+        const has_subquery = where.subquery_sql != null or blk: {
+            for (where.extra) |cond| {
+                if (cond.subquery_sql != null) break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (!has_subquery) {
+            return table.matchesWhere(row, where);
+        }
+
+        var result = try self.matchesConditionWithSubquery(table, row, where.column, where.op, where.value, where.subquery_sql);
+        for (where.extra, 0..) |cond, i| {
+            const cond_result = try self.matchesConditionWithSubquery(table, row, cond.column, cond.op, cond.value, cond.subquery_sql);
+            switch (where.connectors[i]) {
+                .and_op => result = result and cond_result,
+                .or_op => result = result or cond_result,
+            }
+        }
+        return result;
+    }
+
+    pub fn execute(self: *Database, sql: []const u8) anyerror!ExecuteResult {
         self.freeProjected();
         var tok = Tokenizer.init(sql);
         const tokens = try tok.tokenize(self.allocator);
@@ -701,7 +830,7 @@ pub const Database = struct {
                     defer matching_rows.deinit(self.allocator);
                     for (table.rows.items) |row| {
                         if (sel.where) |where| {
-                            if (!table.matchesWhere(row, where)) continue;
+                            if (!(try self.matchesWhereWithSubquery(&table, row, where))) continue;
                         }
                         try matching_rows.append(self.allocator, row);
                     }
