@@ -4,10 +4,10 @@
 
 ### 完了
 - [x] DISTINCT
+- [x] HAVING句
 
 ### 未実装
 - [ ] サブクエリ
-- [ ] HAVING句
 - [ ] ALTER TABLE
 - [ ] CREATE INDEX
 

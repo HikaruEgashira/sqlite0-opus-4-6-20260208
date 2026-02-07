@@ -1,0 +1,11 @@
+CREATE TABLE sales (id INTEGER PRIMARY KEY, product TEXT, amount INTEGER);
+INSERT INTO sales VALUES (1, 'apple', 100);
+INSERT INTO sales VALUES (2, 'banana', 200);
+INSERT INTO sales VALUES (3, 'apple', 150);
+INSERT INTO sales VALUES (4, 'cherry', 300);
+INSERT INTO sales VALUES (5, 'banana', 250);
+INSERT INTO sales VALUES (6, 'apple', 50);
+INSERT INTO sales VALUES (7, 'cherry', 100);
+SELECT product, COUNT(*) FROM sales GROUP BY product HAVING COUNT(*) > 2;
+SELECT product, SUM(amount) FROM sales GROUP BY product HAVING SUM(amount) >= 400;
+SELECT product, COUNT(*) FROM sales GROUP BY product HAVING COUNT(*) = 2;

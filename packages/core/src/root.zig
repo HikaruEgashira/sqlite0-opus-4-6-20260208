@@ -15,6 +15,7 @@ pub const SelectExpr = parser.SelectExpr;
 pub const AggFunc = parser.AggFunc;
 pub const JoinClause = parser.JoinClause;
 pub const JoinType = parser.JoinType;
+pub const HavingClause = parser.HavingClause;
 
 pub const Value = union(enum) {
     integer: i64,
@@ -447,6 +448,44 @@ pub const Database = struct {
                     return compareValuesOrder(a[c.idx], b[c.idx]) == .lt;
                 }
             }.lessThan);
+        }
+
+        // Apply HAVING filter
+        if (sel.having) |having| {
+            var write_idx: usize = 0;
+            const count = proj_rows.len;
+            for (0..count) |ri| {
+                // Evaluate HAVING on already-computed projected values
+                var having_val: ?Value = null;
+                for (sel.select_exprs, 0..) |expr, ei| {
+                    if (expr == .aggregate) {
+                        const agg = expr.aggregate;
+                        if (agg.func == having.func and std.mem.eql(u8, agg.arg, having.arg)) {
+                            having_val = proj_rows[ri].values[ei];
+                            break;
+                        }
+                    }
+                }
+                if (having_val == null) {
+                    // HAVING aggregate not in SELECT list — skip filtering for this row
+                    proj_rows[write_idx] = proj_rows[ri];
+                    proj_values[write_idx] = proj_values[ri];
+                    write_idx += 1;
+                    continue;
+                }
+                const hv = having_val.?;
+                const compare_val = Table.parseRawValue(having.value);
+                if (Table.compareValues(hv, compare_val, having.op)) {
+                    proj_rows[write_idx] = proj_rows[ri];
+                    proj_values[write_idx] = proj_values[ri];
+                    write_idx += 1;
+                } else {
+                    // Free filtered-out row's values
+                    self.allocator.free(proj_values[ri]);
+                }
+            }
+            proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
+            proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
         }
 
         self.projected_rows = proj_rows;

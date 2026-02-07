@@ -38,6 +38,7 @@ pub const TokenType = enum {
     kw_left,
     kw_on,
     kw_distinct,
+    kw_having,
 
     // Literals
     integer_literal,
@@ -215,6 +216,7 @@ pub const Tokenizer = struct {
             .{ "LEFT", TokenType.kw_left },
             .{ "ON", TokenType.kw_on },
             .{ "DISTINCT", TokenType.kw_distinct },
+            .{ "HAVING", TokenType.kw_having },
         };
 
         inline for (keywords) |entry| {

@@ -80,6 +80,13 @@ pub const JoinClause = struct {
     right_column: []const u8,
 };
 
+pub const HavingClause = struct {
+    func: AggFunc,
+    arg: []const u8,
+    op: CompOp,
+    value: []const u8,
+};
+
 pub const Statement = union(enum) {
     create_table: CreateTable,
     insert: Insert,
@@ -106,6 +113,7 @@ pub const Statement = union(enum) {
         join: ?JoinClause,
         where: ?WhereClause,
         group_by: ?[]const u8, // column name
+        having: ?HavingClause,
         order_by: ?OrderByClause,
         limit: ?i64,
         offset: ?i64,
@@ -337,6 +345,34 @@ pub const Parser = struct {
             group_by = gb_tok.lexeme;
         }
 
+        // Parse optional HAVING
+        var having: ?HavingClause = null;
+        if (self.peek().type == .kw_having) {
+            _ = self.advance();
+            const func = isAggFunc(self.peek().type) orelse return ParseError.UnexpectedToken;
+            _ = self.advance();
+            _ = try self.expect(.lparen);
+            const having_arg_tok = self.advance();
+            const having_arg: []const u8 = switch (having_arg_tok.type) {
+                .star => "*",
+                .identifier => having_arg_tok.lexeme,
+                else => return ParseError.UnexpectedToken,
+            };
+            _ = try self.expect(.rparen);
+            const having_op = try self.parseCompOp();
+            const having_val = self.advance();
+            switch (having_val.type) {
+                .integer_literal, .string_literal, .identifier => {},
+                else => return ParseError.UnexpectedToken,
+            }
+            having = .{
+                .func = func,
+                .arg = having_arg,
+                .op = having_op,
+                .value = having_val.lexeme,
+            };
+        }
+
         // Parse optional ORDER BY
         const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
 
@@ -369,6 +405,7 @@ pub const Parser = struct {
                 .join = join,
                 .where = where,
                 .group_by = group_by,
+                .having = having,
                 .order_by = order_by,
                 .limit = limit,
                 .offset = offset,

@@ -11,7 +11,7 @@
 - ~~JOIN (INNER JOIN, LEFT JOIN)~~ ✓
 - ~~WHERE句の拡張（AND/OR）~~ ✓
 - サブクエリ
-- HAVING句
+- ~~HAVING句~~ ✓
 - ~~DISTINCT~~ ✓
 - NULL値の適切なハンドリング
 - ALTER TABLE
