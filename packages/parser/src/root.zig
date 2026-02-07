@@ -11,10 +11,28 @@ pub const ColumnDef = struct {
     is_primary_key: bool,
 };
 
+pub const CompOp = enum {
+    eq,
+    ne,
+    lt,
+    le,
+    gt,
+    ge,
+};
+
+pub const WhereClause = struct {
+    column: []const u8,
+    op: CompOp,
+    value: []const u8,
+};
+
 pub const Statement = union(enum) {
     create_table: CreateTable,
     insert: Insert,
     select_stmt: Select,
+    delete: Delete,
+    update: Update,
+    drop_table: DropTable,
 
     pub const CreateTable = struct {
         table_name: []const u8,
@@ -29,6 +47,23 @@ pub const Statement = union(enum) {
     pub const Select = struct {
         table_name: []const u8,
         columns: []const []const u8, // empty = *
+        where: ?WhereClause,
+    };
+
+    pub const Delete = struct {
+        table_name: []const u8,
+        where: ?WhereClause,
+    };
+
+    pub const Update = struct {
+        table_name: []const u8,
+        set_column: []const u8,
+        set_value: []const u8,
+        where: ?WhereClause,
+    };
+
+    pub const DropTable = struct {
+        table_name: []const u8,
     };
 };
 
@@ -57,6 +92,9 @@ pub const Parser = struct {
             .kw_create => self.parseCreateTable(),
             .kw_insert => self.parseInsert(),
             .kw_select => self.parseSelect(),
+            .kw_delete => self.parseDelete(),
+            .kw_update => self.parseUpdate(),
+            .kw_drop => self.parseDropTable(),
             else => ParseError.UnexpectedToken,
         };
     }
@@ -189,14 +227,90 @@ pub const Parser = struct {
 
         _ = try self.expect(.kw_from);
         const table_tok = try self.expect(.identifier);
+
+        const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
         _ = try self.expect(.semicolon);
 
         return Statement{
             .select_stmt = .{
                 .table_name = table_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .where = where,
             },
         };
+    }
+
+    fn parseWhereClause(self: *Parser) ParseError!WhereClause {
+        _ = try self.expect(.kw_where);
+        const col_tok = try self.expect(.identifier);
+        const op_tok = self.advance();
+        const op: CompOp = switch (op_tok.type) {
+            .equals => .eq,
+            .not_equals => .ne,
+            .less_than => .lt,
+            .less_equal => .le,
+            .greater_than => .gt,
+            .greater_equal => .ge,
+            else => return ParseError.UnexpectedToken,
+        };
+        const val_tok = self.advance();
+        switch (val_tok.type) {
+            .integer_literal, .string_literal, .identifier => {},
+            else => return ParseError.UnexpectedToken,
+        }
+        return .{
+            .column = col_tok.lexeme,
+            .op = op,
+            .value = val_tok.lexeme,
+        };
+    }
+
+    fn parseDelete(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_delete);
+        _ = try self.expect(.kw_from);
+        const name_tok = try self.expect(.identifier);
+
+        const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
+        _ = try self.expect(.semicolon);
+
+        return Statement{ .delete = .{
+            .table_name = name_tok.lexeme,
+            .where = where,
+        } };
+    }
+
+    fn parseUpdate(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_update);
+        const name_tok = try self.expect(.identifier);
+        _ = try self.expect(.kw_set);
+        const col_tok = try self.expect(.identifier);
+        _ = try self.expect(.equals);
+        const val_tok = self.advance();
+        switch (val_tok.type) {
+            .integer_literal, .string_literal, .identifier => {},
+            else => return ParseError.UnexpectedToken,
+        }
+
+        const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
+        _ = try self.expect(.semicolon);
+
+        return Statement{ .update = .{
+            .table_name = name_tok.lexeme,
+            .set_column = col_tok.lexeme,
+            .set_value = val_tok.lexeme,
+            .where = where,
+        } };
+    }
+
+    fn parseDropTable(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_drop);
+        _ = try self.expect(.kw_table);
+        const name_tok = try self.expect(.identifier);
+        _ = try self.expect(.semicolon);
+
+        return Statement{ .drop_table = .{
+            .table_name = name_tok.lexeme,
+        } };
     }
 };
 
@@ -258,6 +372,85 @@ test "parse SELECT" {
             defer allocator.free(sel.columns);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
+            try std.testing.expectEqual(@as(?WhereClause, null), sel.where);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse SELECT with WHERE" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT * FROM users WHERE id = 1;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            try std.testing.expectEqualStrings("users", sel.table_name);
+            try std.testing.expect(sel.where != null);
+            try std.testing.expectEqualStrings("id", sel.where.?.column);
+            try std.testing.expectEqual(CompOp.eq, sel.where.?.op);
+            try std.testing.expectEqualStrings("1", sel.where.?.value);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse DELETE" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("DELETE FROM users WHERE id = 1;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .delete => |del| {
+            try std.testing.expectEqualStrings("users", del.table_name);
+            try std.testing.expect(del.where != null);
+            try std.testing.expectEqualStrings("id", del.where.?.column);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse UPDATE" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("UPDATE users SET name = 'bob' WHERE id = 1;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .update => |upd| {
+            try std.testing.expectEqualStrings("users", upd.table_name);
+            try std.testing.expectEqualStrings("name", upd.set_column);
+            try std.testing.expectEqualStrings("'bob'", upd.set_value);
+            try std.testing.expect(upd.where != null);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse DROP TABLE" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("DROP TABLE users;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .drop_table => |dt| {
+            try std.testing.expectEqualStrings("users", dt.table_name);
         },
         else => return error.UnexpectedToken,
     }
