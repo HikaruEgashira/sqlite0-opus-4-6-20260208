@@ -26,6 +26,11 @@ pub const WhereClause = struct {
     value: []const u8,
 };
 
+pub const OrderByClause = struct {
+    column: []const u8,
+    is_desc: bool,
+};
+
 pub const Statement = union(enum) {
     create_table: CreateTable,
     insert: Insert,
@@ -48,6 +53,9 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         columns: []const []const u8, // empty = *
         where: ?WhereClause,
+        order_by: ?OrderByClause,
+        limit: ?u64,
+        offset: ?u64,
     };
 
     pub const Delete = struct {
@@ -229,6 +237,22 @@ pub const Parser = struct {
         const table_tok = try self.expect(.identifier);
 
         const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
+
+        const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
+
+        var limit: ?u64 = null;
+        var offset: ?u64 = null;
+        if (self.peek().type == .kw_limit) {
+            _ = self.advance();
+            const limit_tok = try self.expect(.integer_literal);
+            limit = std.fmt.parseInt(u64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            if (self.peek().type == .kw_offset) {
+                _ = self.advance();
+                const offset_tok = try self.expect(.integer_literal);
+                offset = std.fmt.parseInt(u64, offset_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            }
+        }
+
         _ = try self.expect(.semicolon);
 
         return Statement{
@@ -236,6 +260,9 @@ pub const Parser = struct {
                 .table_name = table_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .where = where,
+                .order_by = order_by,
+                .limit = limit,
+                .offset = offset,
             },
         };
     }
@@ -262,6 +289,27 @@ pub const Parser = struct {
             .column = col_tok.lexeme,
             .op = op,
             .value = val_tok.lexeme,
+        };
+    }
+
+    fn parseOrderByClause(self: *Parser) ParseError!OrderByClause {
+        _ = try self.expect(.kw_order);
+        _ = try self.expect(.kw_by);
+        const col_tok = try self.expect(.identifier);
+        const is_desc = switch (self.peek().type) {
+            .kw_desc => blk: {
+                _ = self.advance();
+                break :blk true;
+            },
+            .kw_asc => blk: {
+                _ = self.advance();
+                break :blk false;
+            },
+            else => false, // Default to ASC
+        };
+        return .{
+            .column = col_tok.lexeme,
+            .is_desc = is_desc,
         };
     }
 
@@ -373,6 +421,9 @@ test "parse SELECT" {
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
             try std.testing.expectEqual(@as(?WhereClause, null), sel.where);
+            try std.testing.expectEqual(@as(?OrderByClause, null), sel.order_by);
+            try std.testing.expectEqual(@as(?u64, null), sel.limit);
+            try std.testing.expectEqual(@as(?u64, null), sel.offset);
         },
         else => return error.UnexpectedToken,
     }
@@ -395,6 +446,8 @@ test "parse SELECT with WHERE" {
             try std.testing.expectEqualStrings("id", sel.where.?.column);
             try std.testing.expectEqual(CompOp.eq, sel.where.?.op);
             try std.testing.expectEqualStrings("1", sel.where.?.value);
+            try std.testing.expectEqual(@as(?OrderByClause, null), sel.order_by);
+            try std.testing.expectEqual(@as(?u64, null), sel.limit);
         },
         else => return error.UnexpectedToken,
     }

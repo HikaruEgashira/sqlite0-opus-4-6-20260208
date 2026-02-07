@@ -1,0 +1,8 @@
+CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+INSERT INTO users VALUES (1, 'alice');
+INSERT INTO users VALUES (2, 'bob');
+INSERT INTO users VALUES (3, 'charlie');
+INSERT INTO users VALUES (4, 'david');
+SELECT * FROM users LIMIT 2;
+SELECT * FROM users LIMIT 2 OFFSET 1;
+SELECT * FROM users LIMIT 10;

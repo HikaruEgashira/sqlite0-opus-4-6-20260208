@@ -21,6 +21,12 @@ pub const TokenType = enum {
     kw_and,
     kw_or,
     kw_not,
+    kw_order,
+    kw_by,
+    kw_asc,
+    kw_desc,
+    kw_limit,
+    kw_offset,
 
     // Literals
     integer_literal,
@@ -179,6 +185,12 @@ pub const Tokenizer = struct {
             .{ "AND", TokenType.kw_and },
             .{ "OR", TokenType.kw_or },
             .{ "NOT", TokenType.kw_not },
+            .{ "ORDER", TokenType.kw_order },
+            .{ "BY", TokenType.kw_by },
+            .{ "ASC", TokenType.kw_asc },
+            .{ "DESC", TokenType.kw_desc },
+            .{ "LIMIT", TokenType.kw_limit },
+            .{ "OFFSET", TokenType.kw_offset },
         };
 
         inline for (keywords) |entry| {

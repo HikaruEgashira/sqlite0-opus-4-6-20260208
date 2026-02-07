@@ -6,6 +6,7 @@ pub const Tokenizer = tokenizer.Tokenizer;
 pub const Parser = parser.Parser;
 pub const Statement = parser.Statement;
 pub const WhereClause = parser.WhereClause;
+pub const OrderByClause = parser.OrderByClause;
 pub const CompOp = parser.CompOp;
 
 pub const Value = union(enum) {
@@ -29,6 +30,32 @@ fn dupeStr(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     @memcpy(copy, s);
     return copy;
 }
+
+fn compareRowsByValue(a: Value, b: Value) std.math.Order {
+    if (a == .integer and b == .integer) {
+        if (a.integer < b.integer) return .lt;
+        if (a.integer > b.integer) return .gt;
+        return .eq;
+    }
+    if (a == .text and b == .text) {
+        return std.mem.order(u8, a.text, b.text);
+    }
+    return .eq;
+}
+
+pub const RowComparator = struct {
+    col_idx: usize,
+    is_desc: bool,
+    allocator: std.mem.Allocator,
+
+    pub fn compare(ctx: @This(), a: Row, b: Row) bool {
+        const a_val = a.values[ctx.col_idx];
+        const b_val = b.values[ctx.col_idx];
+        const ord = compareRowsByValue(a_val, b_val);
+        const result = if (ctx.is_desc) ord == .gt else ord == .lt;
+        return result;
+    }
+};
 
 pub const Table = struct {
     name: []const u8,
@@ -215,7 +242,7 @@ pub const Database = struct {
             },
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
-                if (self.tables.get(sel.table_name)) |table| {
+                if (self.tables.getPtr(sel.table_name)) |table| {
                     // Collect matching rows (with optional WHERE filter)
                     var matching_rows: std.ArrayList(Row) = .{};
                     defer matching_rows.deinit(self.allocator);
@@ -226,10 +253,38 @@ pub const Database = struct {
                         try matching_rows.append(self.allocator, row);
                     }
 
+                    // Apply ORDER BY if specified
+                    if (sel.order_by) |order_by| {
+                        const col_idx = table.findColumnIndex(order_by.column) orelse {
+                            return .{ .err = "column not found" };
+                        };
+                        const ctx = RowComparator{ .col_idx = col_idx, .is_desc = order_by.is_desc, .allocator = self.allocator };
+                        std.mem.sort(Row, matching_rows.items, ctx, RowComparator.compare);
+                    }
+
+                    // Apply LIMIT and OFFSET
+                    const offset_val = sel.offset orelse 0;
+                    var final_count = matching_rows.items.len;
+                    if (sel.limit) |limit_val| {
+                        if (offset_val < matching_rows.items.len) {
+                            final_count = @min(limit_val, matching_rows.items.len - offset_val);
+                        } else {
+                            final_count = 0;
+                        }
+                    } else if (offset_val > 0) {
+                        if (offset_val < matching_rows.items.len) {
+                            final_count = matching_rows.items.len - offset_val;
+                        } else {
+                            final_count = 0;
+                        }
+                    }
+
                     if (sel.columns.len == 0) {
                         // SELECT * — copy matched rows to projected storage
-                        const proj_rows = try self.allocator.alloc(Row, matching_rows.items.len);
-                        @memcpy(proj_rows, matching_rows.items);
+                        const proj_rows = try self.allocator.alloc(Row, final_count);
+                        if (final_count > 0) {
+                            @memcpy(proj_rows, matching_rows.items[offset_val .. offset_val + final_count]);
+                        }
                         // No per-row value arrays to track for SELECT *
                         self.projected_rows = proj_rows;
                         return .{ .rows = proj_rows };
@@ -251,16 +306,17 @@ pub const Database = struct {
                         }
                     }
                     // Build projected rows
-                    const row_count = matching_rows.items.len;
-                    var proj_values = try self.allocator.alloc([]Value, row_count);
-                    var proj_rows = try self.allocator.alloc(Row, row_count);
-                    for (matching_rows.items, 0..) |row, ri| {
+                    var proj_values = try self.allocator.alloc([]Value, final_count);
+                    var proj_rows = try self.allocator.alloc(Row, final_count);
+                    for (0..final_count) |i| {
+                        const src_idx = offset_val + i;
+                        const row = matching_rows.items[src_idx];
                         var values = try self.allocator.alloc(Value, sel.columns.len);
-                        for (col_indices, 0..) |src_idx, dst_idx| {
-                            values[dst_idx] = row.values[src_idx];
+                        for (col_indices, 0..) |src_col_idx, dst_idx| {
+                            values[dst_idx] = row.values[src_col_idx];
                         }
-                        proj_values[ri] = values;
-                        proj_rows[ri] = .{ .values = values };
+                        proj_values[i] = values;
+                        proj_rows[i] = .{ .values = values };
                     }
                     self.projected_rows = proj_rows;
                     self.projected_values = proj_values;
