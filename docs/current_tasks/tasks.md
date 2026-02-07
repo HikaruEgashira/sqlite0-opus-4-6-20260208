@@ -1,12 +1,13 @@
 # 現在のタスク
 
-## Phase 2: SQL機能拡張
-- [ ] WHERE句の実装（比較演算子: =, <, >, <=, >=, !=）
-- [ ] DELETE文の実装
-- [ ] UPDATE文の実装
-- [ ] DROP TABLE文の実装
+## Phase 3: SQL機能拡張（次）
+- [ ] JOIN（INNER JOIN, LEFT JOIN）
+- [ ] ORDER BY
+- [ ] GROUP BY
+- [ ] 集約関数 (COUNT, SUM, AVG, MIN, MAX)
+- [ ] LIMIT / OFFSET
 
 ## 次のタスク
 - B-Treeストレージの設計
-- JOIN（INNER, LEFT）
-- ORDER BY / GROUP BY
+- NULL値の適切なハンドリング
+- トランザクション (BEGIN/COMMIT/ROLLBACK)
