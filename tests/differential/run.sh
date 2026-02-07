@@ -29,7 +29,7 @@ for case_file in "$CASES_DIR"/*.sql; do
 
     # Run with sqlite0 (our implementation)
     # Remove prompt prefix, banner lines, OK lines, and empty lines
-    sqlite0_output=$("$SQLITE0" < "$case_file" 2>&1 | sed 's/^sqlite0> //' | grep -v "^sqlite0 v" | grep -v "^Enter SQL" | grep -v "^Bye" | grep -v "^OK$" | grep -v "^$" || true)
+    sqlite0_output=$("$SQLITE0" < "$case_file" 2>/dev/null | sed 's/^sqlite0> //' | grep -v "^sqlite0 v" | grep -v "^Enter SQL" | grep -v "^Bye" | grep -v "^OK$" | grep -v "^$" || true)
 
     # Compare
     if [ "$sqlite3_output" = "$sqlite0_output" ]; then

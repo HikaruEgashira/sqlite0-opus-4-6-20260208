@@ -1,0 +1,12 @@
+CREATE TABLE scores (id INTEGER PRIMARY KEY, name TEXT, score INTEGER);
+INSERT INTO scores VALUES (1, 'alice', 85);
+INSERT INTO scores VALUES (2, 'bob', 92);
+INSERT INTO scores VALUES (3, 'charlie', 78);
+INSERT INTO scores VALUES (4, 'diana', 95);
+INSERT INTO scores VALUES (5, 'eve', 88);
+SELECT COUNT(*) FROM scores;
+SELECT SUM(score) FROM scores;
+SELECT MIN(score) FROM scores;
+SELECT MAX(score) FROM scores;
+SELECT AVG(score) FROM scores;
+SELECT COUNT(*), SUM(score), MIN(score), MAX(score) FROM scores;

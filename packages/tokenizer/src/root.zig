@@ -27,6 +27,12 @@ pub const TokenType = enum {
     kw_desc,
     kw_limit,
     kw_offset,
+    kw_count,
+    kw_sum,
+    kw_avg,
+    kw_min,
+    kw_max,
+    kw_group,
 
     // Literals
     integer_literal,
@@ -191,6 +197,12 @@ pub const Tokenizer = struct {
             .{ "DESC", TokenType.kw_desc },
             .{ "LIMIT", TokenType.kw_limit },
             .{ "OFFSET", TokenType.kw_offset },
+            .{ "COUNT", TokenType.kw_count },
+            .{ "SUM", TokenType.kw_sum },
+            .{ "AVG", TokenType.kw_avg },
+            .{ "MIN", TokenType.kw_min },
+            .{ "MAX", TokenType.kw_max },
+            .{ "GROUP", TokenType.kw_group },
         };
 
         inline for (keywords) |entry| {
@@ -275,6 +287,20 @@ test "tokenize comparison operators" {
     try std.testing.expectEqual(TokenType.less_equal, t.next().type);
     try std.testing.expectEqual(TokenType.greater_than, t.next().type);
     try std.testing.expectEqual(TokenType.greater_equal, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
+
+test "tokenize ORDER BY LIMIT OFFSET" {
+    var t = Tokenizer.init("ORDER BY name ASC LIMIT 10 OFFSET 5 DESC");
+    try std.testing.expectEqual(TokenType.kw_order, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_by, t.next().type);
+    try std.testing.expectEqual(TokenType.identifier, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_asc, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_limit, t.next().type);
+    try std.testing.expectEqual(TokenType.integer_literal, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_offset, t.next().type);
+    try std.testing.expectEqual(TokenType.integer_literal, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_desc, t.next().type);
     try std.testing.expectEqual(TokenType.eof, t.next().type);
 }
 

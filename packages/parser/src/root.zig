@@ -11,6 +11,16 @@ pub const ColumnDef = struct {
     is_primary_key: bool,
 };
 
+pub const SortOrder = enum {
+    asc,
+    desc,
+};
+
+pub const OrderByClause = struct {
+    column: []const u8,
+    order: SortOrder,
+};
+
 pub const CompOp = enum {
     eq,
     ne,
@@ -26,9 +36,20 @@ pub const WhereClause = struct {
     value: []const u8,
 };
 
-pub const OrderByClause = struct {
+pub const AggFunc = enum {
+    count,
+    sum,
+    avg,
+    min,
+    max,
+};
+
+pub const SelectExpr = union(enum) {
     column: []const u8,
-    is_desc: bool,
+    aggregate: struct {
+        func: AggFunc,
+        arg: []const u8, // column name or "*"
+    },
 };
 
 pub const Statement = union(enum) {
@@ -51,11 +72,13 @@ pub const Statement = union(enum) {
 
     pub const Select = struct {
         table_name: []const u8,
-        columns: []const []const u8, // empty = *
+        columns: []const []const u8, // empty = * (plain column names for backward compat)
+        select_exprs: []const SelectExpr, // full expression list (includes aggregates)
         where: ?WhereClause,
+        group_by: ?[]const u8, // column name
         order_by: ?OrderByClause,
-        limit: ?u64,
-        offset: ?u64,
+        limit: ?i64,
+        offset: ?i64,
     };
 
     pub const Delete = struct {
@@ -214,17 +237,44 @@ pub const Parser = struct {
         };
     }
 
+    fn isAggFunc(tt: TokenType) ?AggFunc {
+        return switch (tt) {
+            .kw_count => .count,
+            .kw_sum => .sum,
+            .kw_avg => .avg,
+            .kw_min => .min,
+            .kw_max => .max,
+            else => null,
+        };
+    }
+
     fn parseSelect(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_select);
 
         var columns: std.ArrayList([]const u8) = .{};
+        var select_exprs: std.ArrayList(SelectExpr) = .{};
 
         if (self.peek().type == .star) {
             _ = self.advance();
         } else {
             while (true) {
-                const col_tok = try self.expect(.identifier);
-                columns.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                // Check for aggregate function
+                if (isAggFunc(self.peek().type)) |func| {
+                    _ = self.advance(); // consume func keyword
+                    _ = try self.expect(.lparen);
+                    const arg_tok = self.advance();
+                    const arg: []const u8 = switch (arg_tok.type) {
+                        .star => "*",
+                        .identifier => arg_tok.lexeme,
+                        else => return ParseError.UnexpectedToken,
+                    };
+                    _ = try self.expect(.rparen);
+                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = func, .arg = arg } }) catch return ParseError.OutOfMemory;
+                } else {
+                    const col_tok = try self.expect(.identifier);
+                    columns.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                    select_exprs.append(self.allocator, .{ .column = col_tok.lexeme }) catch return ParseError.OutOfMemory;
+                }
                 if (self.peek().type == .comma) {
                     _ = self.advance();
                 } else {
@@ -238,19 +288,34 @@ pub const Parser = struct {
 
         const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
 
+        // Parse optional GROUP BY
+        var group_by: ?[]const u8 = null;
+        if (self.peek().type == .kw_group) {
+            _ = self.advance();
+            _ = try self.expect(.kw_by);
+            const gb_tok = try self.expect(.identifier);
+            group_by = gb_tok.lexeme;
+        }
+
+        // Parse optional ORDER BY
         const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
 
-        var limit: ?u64 = null;
-        var offset: ?u64 = null;
+        // Parse optional LIMIT
+        var limit: ?i64 = null;
         if (self.peek().type == .kw_limit) {
             _ = self.advance();
-            const limit_tok = try self.expect(.integer_literal);
-            limit = std.fmt.parseInt(u64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
-            if (self.peek().type == .kw_offset) {
-                _ = self.advance();
-                const offset_tok = try self.expect(.integer_literal);
-                offset = std.fmt.parseInt(u64, offset_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
-            }
+            const limit_tok = self.advance();
+            if (limit_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+            limit = std.fmt.parseInt(i64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+        }
+
+        // Parse optional OFFSET
+        var offset: ?i64 = null;
+        if (self.peek().type == .kw_offset) {
+            _ = self.advance();
+            const offset_tok = self.advance();
+            if (offset_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+            offset = std.fmt.parseInt(i64, offset_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
         }
 
         _ = try self.expect(.semicolon);
@@ -259,11 +324,31 @@ pub const Parser = struct {
             .select_stmt = .{
                 .table_name = table_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .where = where,
+                .group_by = group_by,
                 .order_by = order_by,
                 .limit = limit,
                 .offset = offset,
             },
+        };
+    }
+
+    fn parseOrderByClause(self: *Parser) ParseError!OrderByClause {
+        _ = try self.expect(.kw_order);
+        _ = try self.expect(.kw_by);
+        const col_tok = try self.expect(.identifier);
+        var order: SortOrder = .asc;
+        if (self.peek().type == .kw_asc) {
+            _ = self.advance();
+            order = .asc;
+        } else if (self.peek().type == .kw_desc) {
+            _ = self.advance();
+            order = .desc;
+        }
+        return .{
+            .column = col_tok.lexeme,
+            .order = order,
         };
     }
 
@@ -289,27 +374,6 @@ pub const Parser = struct {
             .column = col_tok.lexeme,
             .op = op,
             .value = val_tok.lexeme,
-        };
-    }
-
-    fn parseOrderByClause(self: *Parser) ParseError!OrderByClause {
-        _ = try self.expect(.kw_order);
-        _ = try self.expect(.kw_by);
-        const col_tok = try self.expect(.identifier);
-        const is_desc = switch (self.peek().type) {
-            .kw_desc => blk: {
-                _ = self.advance();
-                break :blk true;
-            },
-            .kw_asc => blk: {
-                _ = self.advance();
-                break :blk false;
-            },
-            else => false, // Default to ASC
-        };
-        return .{
-            .column = col_tok.lexeme,
-            .is_desc = is_desc,
         };
     }
 
@@ -421,9 +485,6 @@ test "parse SELECT" {
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
             try std.testing.expectEqual(@as(?WhereClause, null), sel.where);
-            try std.testing.expectEqual(@as(?OrderByClause, null), sel.order_by);
-            try std.testing.expectEqual(@as(?u64, null), sel.limit);
-            try std.testing.expectEqual(@as(?u64, null), sel.offset);
         },
         else => return error.UnexpectedToken,
     }
@@ -446,8 +507,6 @@ test "parse SELECT with WHERE" {
             try std.testing.expectEqualStrings("id", sel.where.?.column);
             try std.testing.expectEqual(CompOp.eq, sel.where.?.op);
             try std.testing.expectEqualStrings("1", sel.where.?.value);
-            try std.testing.expectEqual(@as(?OrderByClause, null), sel.order_by);
-            try std.testing.expectEqual(@as(?u64, null), sel.limit);
         },
         else => return error.UnexpectedToken,
     }
@@ -492,6 +551,49 @@ test "parse UPDATE" {
     }
 }
 
+test "parse SELECT with ORDER BY" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT * FROM users ORDER BY name DESC;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            try std.testing.expectEqualStrings("users", sel.table_name);
+            try std.testing.expect(sel.order_by != null);
+            try std.testing.expectEqualStrings("name", sel.order_by.?.column);
+            try std.testing.expectEqual(SortOrder.desc, sel.order_by.?.order);
+            try std.testing.expectEqual(@as(?i64, null), sel.limit);
+            try std.testing.expectEqual(@as(?i64, null), sel.offset);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse SELECT with LIMIT OFFSET" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT * FROM users LIMIT 10 OFFSET 5;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            try std.testing.expectEqualStrings("users", sel.table_name);
+            try std.testing.expectEqual(@as(?i64, 10), sel.limit);
+            try std.testing.expectEqual(@as(?i64, 5), sel.offset);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
 test "parse DROP TABLE" {
     const allocator = std.testing.allocator;
     var tok = Tokenizer.init("DROP TABLE users;");
@@ -504,6 +606,50 @@ test "parse DROP TABLE" {
     switch (stmt) {
         .drop_table => |dt| {
             try std.testing.expectEqualStrings("users", dt.table_name);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse SELECT COUNT(*)" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT COUNT(*) FROM users;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            defer allocator.free(sel.select_exprs);
+            try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
+            try std.testing.expectEqual(@as(usize, 1), sel.select_exprs.len);
+            try std.testing.expectEqual(SelectExpr{ .aggregate = .{ .func = .count, .arg = "*" } }, sel.select_exprs[0]);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse SELECT with multiple aggregates" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("SELECT COUNT(*), SUM(price), AVG(price) FROM products;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+
+    switch (stmt) {
+        .select_stmt => |sel| {
+            defer allocator.free(sel.columns);
+            defer allocator.free(sel.select_exprs);
+            try std.testing.expectEqual(@as(usize, 3), sel.select_exprs.len);
+            try std.testing.expectEqual(AggFunc.count, sel.select_exprs[0].aggregate.func);
+            try std.testing.expectEqual(AggFunc.sum, sel.select_exprs[1].aggregate.func);
+            try std.testing.expectEqualStrings("price", sel.select_exprs[1].aggregate.arg);
+            try std.testing.expectEqual(AggFunc.avg, sel.select_exprs[2].aggregate.func);
         },
         else => return error.UnexpectedToken,
     }
