@@ -33,6 +33,10 @@ pub const TokenType = enum {
     kw_min,
     kw_max,
     kw_group,
+    kw_join,
+    kw_inner,
+    kw_left,
+    kw_on,
 
     // Literals
     integer_literal,
@@ -51,6 +55,7 @@ pub const TokenType = enum {
     less_equal,
     greater_than,
     greater_equal,
+    dot,
 
     // Special
     eof,
@@ -106,6 +111,7 @@ pub const Tokenizer = struct {
             '=' => .equals,
             '<' => .less_than,
             '>' => .greater_than,
+            '.' => .dot,
             else => null,
         };
 
@@ -203,6 +209,10 @@ pub const Tokenizer = struct {
             .{ "MIN", TokenType.kw_min },
             .{ "MAX", TokenType.kw_max },
             .{ "GROUP", TokenType.kw_group },
+            .{ "JOIN", TokenType.kw_join },
+            .{ "INNER", TokenType.kw_inner },
+            .{ "LEFT", TokenType.kw_left },
+            .{ "ON", TokenType.kw_on },
         };
 
         inline for (keywords) |entry| {

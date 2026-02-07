@@ -52,6 +52,20 @@ pub const SelectExpr = union(enum) {
     },
 };
 
+pub const JoinType = enum {
+    inner,
+    left,
+};
+
+pub const JoinClause = struct {
+    join_type: JoinType,
+    table_name: []const u8,
+    left_table: []const u8,
+    left_column: []const u8,
+    right_table: []const u8,
+    right_column: []const u8,
+};
+
 pub const Statement = union(enum) {
     create_table: CreateTable,
     insert: Insert,
@@ -74,6 +88,7 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         columns: []const []const u8, // empty = * (plain column names for backward compat)
         select_exprs: []const SelectExpr, // full expression list (includes aggregates)
+        join: ?JoinClause,
         where: ?WhereClause,
         group_by: ?[]const u8, // column name
         order_by: ?OrderByClause,
@@ -286,6 +301,12 @@ pub const Parser = struct {
         _ = try self.expect(.kw_from);
         const table_tok = try self.expect(.identifier);
 
+        // Parse optional JOIN
+        const join = if (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join)
+            try self.parseJoinClause()
+        else
+            null;
+
         const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
 
         // Parse optional GROUP BY
@@ -325,12 +346,46 @@ pub const Parser = struct {
                 .table_name = table_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .join = join,
                 .where = where,
                 .group_by = group_by,
                 .order_by = order_by,
                 .limit = limit,
                 .offset = offset,
             },
+        };
+    }
+
+    fn parseJoinClause(self: *Parser) ParseError!JoinClause {
+        // Parse: [INNER|LEFT] JOIN table ON t1.col = t2.col
+        var join_type: JoinType = .inner;
+        if (self.peek().type == .kw_inner) {
+            _ = self.advance();
+            join_type = .inner;
+        } else if (self.peek().type == .kw_left) {
+            _ = self.advance();
+            join_type = .left;
+        }
+        _ = try self.expect(.kw_join);
+        const join_table = try self.expect(.identifier);
+
+        _ = try self.expect(.kw_on);
+        // Parse: t1.col = t2.col
+        const left_table = try self.expect(.identifier);
+        _ = try self.expect(.dot);
+        const left_col = try self.expect(.identifier);
+        _ = try self.expect(.equals);
+        const right_table = try self.expect(.identifier);
+        _ = try self.expect(.dot);
+        const right_col = try self.expect(.identifier);
+
+        return .{
+            .join_type = join_type,
+            .table_name = join_table.lexeme,
+            .left_table = left_table.lexeme,
+            .left_column = left_col.lexeme,
+            .right_table = right_table.lexeme,
+            .right_column = right_col.lexeme,
         };
     }
 

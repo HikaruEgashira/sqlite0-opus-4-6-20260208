@@ -11,6 +11,8 @@ pub const OrderByClause = parser.OrderByClause;
 pub const SortOrder = parser.SortOrder;
 pub const SelectExpr = parser.SelectExpr;
 pub const AggFunc = parser.AggFunc;
+pub const JoinClause = parser.JoinClause;
+pub const JoinType = parser.JoinType;
 
 pub const Value = union(enum) {
     integer: i64,
@@ -432,6 +434,148 @@ pub const Database = struct {
         return .{ .rows = proj_rows };
     }
 
+    fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
+        const join = sel.join.?;
+        const left_table = self.tables.get(sel.table_name) orelse return .{ .err = "table not found" };
+        const right_table = self.tables.get(join.table_name) orelse return .{ .err = "table not found" };
+
+        // Resolve join column indices
+        const left_join_col = left_table.findColumnIndex(join.left_column) orelse
+            (if (left_table.findColumnIndex(join.right_column)) |idx| idx else return .{ .err = "join column not found" });
+        const right_join_col = right_table.findColumnIndex(join.right_column) orelse
+            (if (right_table.findColumnIndex(join.left_column)) |idx| idx else return .{ .err = "join column not found" });
+
+        const left_col_count = left_table.columns.len;
+        const right_col_count = right_table.columns.len;
+        const total_cols = left_col_count + right_col_count;
+
+        var joined_rows: std.ArrayList(Row) = .{};
+        var joined_values: std.ArrayList([]Value) = .{};
+
+        // Nested loop join
+        for (left_table.rows.items) |left_row| {
+            var matched = false;
+            for (right_table.rows.items) |right_row| {
+                if (compareValuesOrder(left_row.values[left_join_col], right_row.values[right_join_col]) == .eq) {
+                    matched = true;
+                    var values = try self.allocator.alloc(Value, total_cols);
+                    @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
+                    @memcpy(values[left_col_count..total_cols], right_row.values[0..right_col_count]);
+                    try joined_values.append(self.allocator, values);
+                    try joined_rows.append(self.allocator, .{ .values = values });
+                }
+            }
+            // LEFT JOIN: output left row with NULLs for right columns
+            if (!matched and join.join_type == .left) {
+                var values = try self.allocator.alloc(Value, total_cols);
+                @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
+                for (left_col_count..total_cols) |i| {
+                    values[i] = .{ .null_val = {} };
+                }
+                try joined_values.append(self.allocator, values);
+                try joined_rows.append(self.allocator, .{ .values = values });
+            }
+        }
+
+        // Apply WHERE filter on joined rows
+        if (sel.where) |where| {
+            // Find column index in joined schema
+            var col_idx: ?usize = null;
+            for (left_table.columns, 0..) |col, i| {
+                if (std.mem.eql(u8, where.column, col.name)) {
+                    col_idx = i;
+                    break;
+                }
+            }
+            if (col_idx == null) {
+                for (right_table.columns, 0..) |col, i| {
+                    if (std.mem.eql(u8, where.column, col.name)) {
+                        col_idx = left_col_count + i;
+                        break;
+                    }
+                }
+            }
+            if (col_idx) |ci| {
+                const where_val = Table.parseRawValue(where.value);
+                var i: usize = joined_rows.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (!Table.compareValues(joined_rows.items[i].values[ci], where_val, where.op)) {
+                        self.allocator.free(joined_values.items[i]);
+                        _ = joined_rows.orderedRemove(i);
+                        _ = joined_values.orderedRemove(i);
+                    }
+                }
+            }
+        }
+
+        const result_rows = joined_rows.items;
+
+        // SELECT * for JOIN
+        if (sel.columns.len == 0 and sel.select_exprs.len == 0) {
+            const proj_rows = try self.allocator.alloc(Row, result_rows.len);
+            @memcpy(proj_rows, result_rows);
+            self.projected_rows = proj_rows;
+            const pv = try self.allocator.alloc([]Value, joined_values.items.len);
+            @memcpy(pv, joined_values.items);
+            self.projected_values = pv;
+            joined_rows.deinit(self.allocator);
+            joined_values.deinit(self.allocator);
+            return .{ .rows = proj_rows };
+        }
+
+        // Column projection for JOIN
+        var col_indices = try self.allocator.alloc(usize, sel.columns.len);
+        defer self.allocator.free(col_indices);
+        for (sel.columns, 0..) |sel_col, i| {
+            var found = false;
+            for (left_table.columns, 0..) |tbl_col, j| {
+                if (std.mem.eql(u8, sel_col, tbl_col.name)) {
+                    col_indices[i] = j;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                for (right_table.columns, 0..) |tbl_col, j| {
+                    if (std.mem.eql(u8, sel_col, tbl_col.name)) {
+                        col_indices[i] = left_col_count + j;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                // Free allocated join values
+                for (joined_values.items) |v| self.allocator.free(v);
+                joined_values.deinit(self.allocator);
+                joined_rows.deinit(self.allocator);
+                return .{ .err = "column not found" };
+            }
+        }
+
+        const row_count = result_rows.len;
+        var proj_values = try self.allocator.alloc([]Value, row_count);
+        var proj_rows = try self.allocator.alloc(Row, row_count);
+        for (result_rows, 0..) |row, ri| {
+            var values = try self.allocator.alloc(Value, sel.columns.len);
+            for (col_indices, 0..) |src_idx, dst_idx| {
+                values[dst_idx] = row.values[src_idx];
+            }
+            proj_values[ri] = values;
+            proj_rows[ri] = .{ .values = values };
+        }
+
+        // Free original join values (projection made copies of needed values)
+        for (joined_values.items) |v| self.allocator.free(v);
+        joined_values.deinit(self.allocator);
+        joined_rows.deinit(self.allocator);
+
+        self.projected_rows = proj_rows;
+        self.projected_values = proj_values;
+        return .{ .rows = proj_rows };
+    }
+
     pub fn execute(self: *Database, sql: []const u8) !ExecuteResult {
         self.freeProjected();
         var tok = Tokenizer.init(sql);
@@ -469,6 +613,12 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
+
+                // Handle JOIN queries
+                if (sel.join != null) {
+                    return self.executeJoin(sel);
+                }
+
                 if (self.tables.get(sel.table_name)) |table| {
                     // Collect matching rows (with optional WHERE filter)
                     var matching_rows: std.ArrayList(Row) = .{};

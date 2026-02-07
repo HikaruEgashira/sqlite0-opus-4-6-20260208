@@ -65,7 +65,7 @@ pub fn main() !void {
                         switch (val) {
                             .integer => |n| try printStr(stdout, "{d}", .{n}),
                             .text => |t| try writeAll(stdout, t),
-                            .null_val => try writeAll(stdout, "NULL"),
+                            .null_val => {},
                         }
                     }
                     try writeAll(stdout, "\n");
