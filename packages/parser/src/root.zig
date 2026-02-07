@@ -91,6 +91,7 @@ pub const HavingClause = struct {
 
 pub const Statement = union(enum) {
     create_table: CreateTable,
+    create_index: CreateIndex,
     insert: Insert,
     select_stmt: Select,
     delete: Delete,
@@ -148,6 +149,12 @@ pub const Statement = union(enum) {
             new_name: []const u8,
         },
     };
+
+    pub const CreateIndex = struct {
+        index_name: []const u8,
+        table_name: []const u8,
+        column_name: []const u8,
+    };
 };
 
 pub const ParseError = error{
@@ -172,7 +179,7 @@ pub const Parser = struct {
     pub fn parse(self: *Parser) ParseError!Statement {
         const tok = self.peek();
         return switch (tok.type) {
-            .kw_create => self.parseCreateTable(),
+            .kw_create => self.parseCreate(),
             .kw_insert => self.parseInsert(),
             .kw_select => self.parseSelect(),
             .kw_delete => self.parseDelete(),
@@ -206,9 +213,18 @@ pub const Parser = struct {
         return tok;
     }
 
-    fn parseCreateTable(self: *Parser) ParseError!Statement {
+    fn parseCreate(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_create);
+        if (self.peek().type == .kw_index) {
+            return self.parseCreateIndex();
+        }
+        // Default: CREATE TABLE
         _ = try self.expect(.kw_table);
+        return self.parseCreateTableBody();
+    }
+
+    fn parseCreateTableBody(self: *Parser) ParseError!Statement {
+        // CREATE and TABLE already consumed by parseCreate
         const name_tok = try self.expect(.identifier);
         _ = try self.expect(.lparen);
 
@@ -252,6 +268,23 @@ pub const Parser = struct {
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             },
         };
+    }
+
+    fn parseCreateIndex(self: *Parser) ParseError!Statement {
+        // CREATE already consumed, INDEX is next
+        _ = try self.expect(.kw_index);
+        const idx_name = try self.expect(.identifier);
+        _ = try self.expect(.kw_on);
+        const tbl_name = try self.expect(.identifier);
+        _ = try self.expect(.lparen);
+        const col_name = try self.expect(.identifier);
+        _ = try self.expect(.rparen);
+        _ = try self.expect(.semicolon);
+        return Statement{ .create_index = .{
+            .index_name = idx_name.lexeme,
+            .table_name = tbl_name.lexeme,
+            .column_name = col_name.lexeme,
+        } };
     }
 
     fn parseInsert(self: *Parser) ParseError!Statement {

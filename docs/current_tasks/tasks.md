@@ -6,10 +6,10 @@
 - [x] DISTINCT
 - [x] HAVING句
 - [x] ALTER TABLE (ADD COLUMN, RENAME TO)
+- [x] CREATE INDEX (構文サポート、メタデータのみ)
 
 ### 未実装
 - [ ] サブクエリ
-- [ ] CREATE INDEX
 
 ## 次のタスク
 - B-Treeストレージの設計

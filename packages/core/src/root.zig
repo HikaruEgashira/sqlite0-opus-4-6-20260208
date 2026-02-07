@@ -674,6 +674,10 @@ pub const Database = struct {
                 try self.tables.put(table_name, table);
                 return .ok;
             },
+            .create_index => {
+                // Syntax accepted, metadata-only (no actual index acceleration yet)
+                return .ok;
+            },
             .insert => |ins| {
                 defer self.allocator.free(ins.values);
                 if (self.tables.getPtr(ins.table_name)) |table| {
