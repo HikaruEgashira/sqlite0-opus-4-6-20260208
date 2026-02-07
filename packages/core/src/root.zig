@@ -5,6 +5,8 @@ const parser = @import("parser");
 pub const Tokenizer = tokenizer.Tokenizer;
 pub const Parser = parser.Parser;
 pub const Statement = parser.Statement;
+pub const WhereClause = parser.WhereClause;
+pub const CompOp = parser.CompOp;
 
 pub const Value = union(enum) {
     integer: i64,
@@ -59,15 +61,77 @@ pub const Table = struct {
         try self.rows.append(self.allocator, .{ .values = values });
     }
 
+    pub fn findColumnIndex(self: *const Table, col_name: []const u8) ?usize {
+        for (self.columns, 0..) |col, i| {
+            if (std.mem.eql(u8, col_name, col.name)) return i;
+        }
+        return null;
+    }
+
+    pub fn matchesWhere(self: *const Table, row: Row, where: WhereClause) bool {
+        const col_idx = self.findColumnIndex(where.column) orelse return false;
+        const val = row.values[col_idx];
+
+        // Parse the where value
+        const where_val = parseRawValue(where.value);
+
+        return compareValues(val, where_val, where.op);
+    }
+
+    fn parseRawValue(raw: []const u8) Value {
+        if (raw.len >= 2 and raw[0] == '\'') {
+            return .{ .text = raw[1 .. raw.len - 1] };
+        }
+        const num = std.fmt.parseInt(i64, raw, 10) catch {
+            return .{ .text = raw };
+        };
+        return .{ .integer = num };
+    }
+
+    fn compareValues(a: Value, b: Value, op: CompOp) bool {
+        // Integer vs Integer
+        if (a == .integer and b == .integer) {
+            return switch (op) {
+                .eq => a.integer == b.integer,
+                .ne => a.integer != b.integer,
+                .lt => a.integer < b.integer,
+                .le => a.integer <= b.integer,
+                .gt => a.integer > b.integer,
+                .ge => a.integer >= b.integer,
+            };
+        }
+        // Text vs Text
+        if (a == .text and b == .text) {
+            const ord = std.mem.order(u8, a.text, b.text);
+            return switch (op) {
+                .eq => ord == .eq,
+                .ne => ord != .eq,
+                .lt => ord == .lt,
+                .le => ord == .lt or ord == .eq,
+                .gt => ord == .gt,
+                .ge => ord == .gt or ord == .eq,
+            };
+        }
+        // Mismatched types: only eq/ne are meaningful
+        return switch (op) {
+            .ne => true,
+            else => false,
+        };
+    }
+
+    fn freeRow(self: *Table, row: Row) void {
+        for (row.values) |val| {
+            switch (val) {
+                .text => |t| self.allocator.free(t),
+                else => {},
+            }
+        }
+        self.allocator.free(row.values);
+    }
+
     pub fn deinit(self: *Table) void {
         for (self.rows.items) |row| {
-            for (row.values) |val| {
-                switch (val) {
-                    .text => |t| self.allocator.free(t),
-                    else => {},
-                }
-            }
-            self.allocator.free(row.values);
+            self.freeRow(row);
         }
         self.rows.deinit(self.allocator);
         for (self.columns) |col| {
@@ -152,9 +216,23 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 if (self.tables.get(sel.table_name)) |table| {
+                    // Collect matching rows (with optional WHERE filter)
+                    var matching_rows: std.ArrayList(Row) = .{};
+                    defer matching_rows.deinit(self.allocator);
+                    for (table.rows.items) |row| {
+                        if (sel.where) |where| {
+                            if (!table.matchesWhere(row, where)) continue;
+                        }
+                        try matching_rows.append(self.allocator, row);
+                    }
+
                     if (sel.columns.len == 0) {
-                        // SELECT *
-                        return .{ .rows = table.rows.items };
+                        // SELECT * — copy matched rows to projected storage
+                        const proj_rows = try self.allocator.alloc(Row, matching_rows.items.len);
+                        @memcpy(proj_rows, matching_rows.items);
+                        // No per-row value arrays to track for SELECT *
+                        self.projected_rows = proj_rows;
+                        return .{ .rows = proj_rows };
                     }
                     // Column projection: resolve column indices
                     var col_indices = try self.allocator.alloc(usize, sel.columns.len);
@@ -173,10 +251,10 @@ pub const Database = struct {
                         }
                     }
                     // Build projected rows
-                    const row_count = table.rows.items.len;
+                    const row_count = matching_rows.items.len;
                     var proj_values = try self.allocator.alloc([]Value, row_count);
                     var proj_rows = try self.allocator.alloc(Row, row_count);
-                    for (table.rows.items, 0..) |row, ri| {
+                    for (matching_rows.items, 0..) |row, ri| {
                         var values = try self.allocator.alloc(Value, sel.columns.len);
                         for (col_indices, 0..) |src_idx, dst_idx| {
                             values[dst_idx] = row.values[src_idx];
@@ -187,6 +265,66 @@ pub const Database = struct {
                     self.projected_rows = proj_rows;
                     self.projected_values = proj_values;
                     return .{ .rows = proj_rows };
+                }
+                return .{ .err = "table not found" };
+            },
+            .delete => |del| {
+                if (self.tables.getPtr(del.table_name)) |table| {
+                    if (del.where) |where| {
+                        // Delete matching rows (iterate backwards to avoid index issues)
+                        var i: usize = table.rows.items.len;
+                        while (i > 0) {
+                            i -= 1;
+                            if (table.matchesWhere(table.rows.items[i], where)) {
+                                table.freeRow(table.rows.items[i]);
+                                _ = table.rows.orderedRemove(i);
+                            }
+                        }
+                    } else {
+                        // DELETE without WHERE: delete all rows
+                        for (table.rows.items) |row| {
+                            table.freeRow(row);
+                        }
+                        table.rows.clearRetainingCapacity();
+                    }
+                    return .ok;
+                }
+                return .{ .err = "table not found" };
+            },
+            .update => |upd| {
+                if (self.tables.getPtr(upd.table_name)) |table| {
+                    const set_col_idx = table.findColumnIndex(upd.set_column) orelse {
+                        return .{ .err = "column not found" };
+                    };
+                    for (table.rows.items) |*row| {
+                        const matches = if (upd.where) |where| table.matchesWhere(row.*, where) else true;
+                        if (matches) {
+                            // Free old text value if needed
+                            switch (row.values[set_col_idx]) {
+                                .text => |t| self.allocator.free(t),
+                                else => {},
+                            }
+                            // Set new value
+                            if (upd.set_value.len >= 2 and upd.set_value[0] == '\'') {
+                                row.values[set_col_idx] = .{ .text = try dupeStr(self.allocator, upd.set_value[1 .. upd.set_value.len - 1]) };
+                            } else {
+                                const num = std.fmt.parseInt(i64, upd.set_value, 10) catch {
+                                    row.values[set_col_idx] = .{ .text = try dupeStr(self.allocator, upd.set_value) };
+                                    continue;
+                                };
+                                row.values[set_col_idx] = .{ .integer = num };
+                            }
+                        }
+                    }
+                    return .ok;
+                }
+                return .{ .err = "table not found" };
+            },
+            .drop_table => |dt| {
+                if (self.tables.fetchRemove(dt.table_name)) |entry| {
+                    var table = entry.value;
+                    table.deinit();
+                    return .ok;
                 }
                 return .{ .err = "table not found" };
             },
