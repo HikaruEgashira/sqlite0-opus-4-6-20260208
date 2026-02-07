@@ -1,0 +1,10 @@
+CREATE TABLE logs (id INTEGER PRIMARY KEY, category TEXT, value INTEGER);
+INSERT INTO logs VALUES (1, 'a', 10);
+INSERT INTO logs VALUES (2, 'b', 20);
+INSERT INTO logs VALUES (3, NULL, 30);
+INSERT INTO logs VALUES (4, 'a', 40);
+INSERT INTO logs VALUES (5, NULL, 50);
+INSERT INTO logs VALUES (6, 'b', 60);
+SELECT category, COUNT(*) FROM logs GROUP BY category;
+SELECT category, SUM(value) FROM logs GROUP BY category;
+SELECT category, MIN(value), MAX(value) FROM logs GROUP BY category;

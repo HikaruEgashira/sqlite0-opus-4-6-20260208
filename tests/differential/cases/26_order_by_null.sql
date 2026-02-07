@@ -1,0 +1,10 @@
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price INTEGER);
+INSERT INTO items VALUES (1, 'apple', 100);
+INSERT INTO items VALUES (2, NULL, 200);
+INSERT INTO items VALUES (3, 'cherry', NULL);
+INSERT INTO items VALUES (4, NULL, NULL);
+INSERT INTO items VALUES (5, 'banana', 150);
+SELECT * FROM items ORDER BY name ASC;
+SELECT * FROM items ORDER BY price ASC;
+SELECT * FROM items ORDER BY price DESC;
+SELECT name FROM items ORDER BY name ASC;

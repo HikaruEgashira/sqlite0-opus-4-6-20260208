@@ -409,11 +409,14 @@ pub const Database = struct {
         switch (func) {
             .sum => {
                 var total: i64 = 0;
+                var has_value = false;
                 for (rows) |row| {
                     if (row.values[col_idx] == .integer) {
                         total += row.values[col_idx].integer;
+                        has_value = true;
                     }
                 }
+                if (!has_value) return .null_val;
                 return .{ .integer = total };
             },
             .avg => {
@@ -425,7 +428,7 @@ pub const Database = struct {
                         cnt += 1;
                     }
                 }
-                if (cnt == 0) return .{ .integer = 0 };
+                if (cnt == 0) return .null_val;
                 const avg = total / @as(f64, @floatFromInt(cnt));
                 // Format as SQLite3-compatible float string
                 var buf: [64]u8 = undefined;
