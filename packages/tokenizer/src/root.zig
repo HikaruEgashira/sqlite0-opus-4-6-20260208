@@ -14,6 +14,13 @@ pub const TokenType = enum {
     kw_text,
     kw_primary,
     kw_key,
+    kw_delete,
+    kw_update,
+    kw_set,
+    kw_drop,
+    kw_and,
+    kw_or,
+    kw_not,
 
     // Literals
     integer_literal,
@@ -27,6 +34,11 @@ pub const TokenType = enum {
     rparen,
     star,
     equals,
+    not_equals,
+    less_than,
+    less_equal,
+    greater_than,
+    greater_equal,
 
     // Special
     eof,
@@ -55,6 +67,23 @@ pub const Tokenizer = struct {
 
         const c = self.source[self.pos];
 
+        // Multi-character operators
+        if (c == '!' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .not_equals, .lexeme = lexeme };
+        }
+        if (c == '<' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .less_equal, .lexeme = lexeme };
+        }
+        if (c == '>' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .greater_equal, .lexeme = lexeme };
+        }
+
         // Single-character tokens
         const single_token: ?TokenType = switch (c) {
             ';' => .semicolon,
@@ -63,6 +92,8 @@ pub const Tokenizer = struct {
             ')' => .rparen,
             '*' => .star,
             '=' => .equals,
+            '<' => .less_than,
+            '>' => .greater_than,
             else => null,
         };
 
@@ -141,6 +172,13 @@ pub const Tokenizer = struct {
             .{ "TEXT", TokenType.kw_text },
             .{ "PRIMARY", TokenType.kw_primary },
             .{ "KEY", TokenType.kw_key },
+            .{ "DELETE", TokenType.kw_delete },
+            .{ "UPDATE", TokenType.kw_update },
+            .{ "SET", TokenType.kw_set },
+            .{ "DROP", TokenType.kw_drop },
+            .{ "AND", TokenType.kw_and },
+            .{ "OR", TokenType.kw_or },
+            .{ "NOT", TokenType.kw_not },
         };
 
         inline for (keywords) |entry| {
@@ -214,5 +252,27 @@ test "case insensitive keywords" {
     try std.testing.expectEqual(TokenType.kw_select, t.next().type);
     try std.testing.expectEqual(TokenType.kw_from, t.next().type);
     try std.testing.expectEqual(TokenType.kw_select, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
+
+test "tokenize comparison operators" {
+    var t = Tokenizer.init("= != < <= > >=");
+    try std.testing.expectEqual(TokenType.equals, t.next().type);
+    try std.testing.expectEqual(TokenType.not_equals, t.next().type);
+    try std.testing.expectEqual(TokenType.less_than, t.next().type);
+    try std.testing.expectEqual(TokenType.less_equal, t.next().type);
+    try std.testing.expectEqual(TokenType.greater_than, t.next().type);
+    try std.testing.expectEqual(TokenType.greater_equal, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
+
+test "tokenize DELETE UPDATE DROP" {
+    var t = Tokenizer.init("DELETE FROM UPDATE SET DROP TABLE");
+    try std.testing.expectEqual(TokenType.kw_delete, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_from, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_update, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_set, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_drop, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_table, t.next().type);
     try std.testing.expectEqual(TokenType.eof, t.next().type);
 }
