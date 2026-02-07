@@ -16,6 +16,8 @@ pub const AggFunc = parser.AggFunc;
 pub const JoinClause = parser.JoinClause;
 pub const JoinType = parser.JoinType;
 pub const HavingClause = parser.HavingClause;
+pub const Expr = parser.Expr;
+pub const BinOp = parser.BinOp;
 
 pub const Value = union(enum) {
     integer: i64,
@@ -391,6 +393,81 @@ pub const Database = struct {
         self.freeSnapshot();
     }
 
+    /// Evaluate an expression AST against a row
+    pub fn evalExpr(self: *Database, expr: *const Expr, tbl: *const Table, row: Row) !Value {
+        switch (expr.*) {
+            .integer_literal => |n| return .{ .integer = n },
+            .string_literal => |s| return .{ .text = try dupeStr(self.allocator, s) },
+            .null_literal => return .null_val,
+            .star => return .null_val, // star is not valid in eval context
+            .column_ref => |name| {
+                const col_idx = tbl.findColumnIndex(name) orelse return .null_val;
+                const val = row.values[col_idx];
+                // Deep copy text values so caller can free them uniformly
+                return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+            },
+            .binary_op => |bin| {
+                const left_val = try self.evalExpr(bin.left, tbl, row);
+                const right_val = try self.evalExpr(bin.right, tbl, row);
+                defer {
+                    if (left_val == .text) self.allocator.free(left_val.text);
+                    if (right_val == .text) self.allocator.free(right_val.text);
+                }
+                // NULL propagation
+                if (left_val == .null_val or right_val == .null_val) return .null_val;
+                switch (bin.op) {
+                    .concat => {
+                        // String concatenation
+                        const l = self.valueToText(left_val);
+                        defer self.allocator.free(l);
+                        const r = self.valueToText(right_val);
+                        defer self.allocator.free(r);
+                        const result = self.allocator.alloc(u8, l.len + r.len) catch return .null_val;
+                        @memcpy(result[0..l.len], l);
+                        @memcpy(result[l.len..], r);
+                        return .{ .text = result };
+                    },
+                    .add, .sub, .mul, .div => {
+                        const l = self.valueToI64(left_val);
+                        const r = self.valueToI64(right_val);
+                        if (l == null or r == null) return .null_val;
+                        return .{ .integer = switch (bin.op) {
+                            .add => l.? + r.?,
+                            .sub => l.? - r.?,
+                            .mul => l.? * r.?,
+                            .div => if (r.? == 0) return .null_val else @divTrunc(l.?, r.?),
+                            else => unreachable,
+                        } };
+                    },
+                }
+            },
+            .aggregate => {
+                // Aggregate expressions are evaluated differently (in computeAgg)
+                return .null_val;
+            },
+        }
+    }
+
+    fn valueToText(self: *Database, val: Value) []const u8 {
+        switch (val) {
+            .text => |t| return dupeStr(self.allocator, t) catch "",
+            .integer => |n| {
+                var buf: [32]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return "";
+                return dupeStr(self.allocator, slice) catch "";
+            },
+            .null_val => return dupeStr(self.allocator, "") catch "",
+        }
+    }
+
+    fn valueToI64(_: *Database, val: Value) ?i64 {
+        switch (val) {
+            .integer => |n| return n,
+            .text => |t| return std.fmt.parseInt(i64, t, 10) catch null,
+            .null_val => return null,
+        }
+    }
+
     fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row) !Value {
         if (func == .count) {
             if (std.mem.eql(u8, arg, "*")) {
@@ -481,8 +558,13 @@ pub const Database = struct {
         var texts: std.ArrayList([]const u8) = .{};
         for (all_values) |values| {
             for (sel_exprs, 0..) |expr, i| {
-                // Only track text values from aggregate expressions (e.g., AVG)
-                if (expr == .aggregate and values[i] == .text) {
+                // Track text values from aggregate or expr expressions
+                const is_computed = switch (expr) {
+                    .aggregate => true,
+                    .expr => true,
+                    .column => false,
+                };
+                if (is_computed and values[i] == .text) {
                     texts.append(self.allocator, values[i].text) catch {};
                 }
             }
@@ -509,6 +591,15 @@ pub const Database = struct {
                     const col_idx = tbl.findColumnIndex(col_name) orelse return .{ .err = "column not found" };
                     if (rows.len > 0) {
                         values[i] = rows[0].values[col_idx];
+                    } else {
+                        values[i] = .null_val;
+                    }
+                },
+                .expr => |e| {
+                    if (parser.Parser.exprAsAggregate(e)) |agg| {
+                        values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows);
+                    } else if (rows.len > 0) {
+                        values[i] = try self.evalExpr(e, tbl, rows[0]);
                     } else {
                         values[i] = .null_val;
                     }
@@ -573,6 +664,15 @@ pub const Database = struct {
                     .column => |col_name| {
                         const col_idx = tbl.findColumnIndex(col_name) orelse return .{ .err = "column not found" };
                         values[ei] = grp[0].values[col_idx];
+                    },
+                    .expr => |e| {
+                        if (parser.Parser.exprAsAggregate(e)) |agg| {
+                            values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp);
+                        } else if (grp.len > 0) {
+                            values[ei] = try self.evalExpr(e, tbl, grp[0]);
+                        } else {
+                            values[ei] = .null_val;
+                        }
                     },
                 }
             }
@@ -675,6 +775,17 @@ pub const Database = struct {
             const has_agg = blk: {
                 for (sel.select_exprs) |expr| {
                     if (expr == .aggregate) break :blk true;
+                    if (expr == .expr) {
+                        if (parser.Parser.exprAsAggregate(expr.expr) != null) break :blk true;
+                    }
+                }
+                break :blk false;
+            };
+
+            // Check if any select_expr is a complex expression
+            const has_expr = blk: {
+                for (sel.select_exprs) |expr| {
+                    if (expr == .expr) break :blk true;
                 }
                 break :blk false;
             };
@@ -748,9 +859,68 @@ pub const Database = struct {
                 return .{ .rows = proj_rows };
             }
 
+            // If any expression is complex (not a simple column), evaluate using Expr AST
+            if (has_expr) {
+                return self.evaluateExprSelect(sel, &table, result_rows);
+            }
+
             return self.projectColumns(sel, &table, result_rows);
         }
         return .{ .err = "table not found" };
+    }
+
+    /// Evaluate SELECT with expression ASTs (handles arithmetic, concat, etc.)
+    fn evaluateExprSelect(self: *Database, sel: Statement.Select, tbl: *const Table, result_rows: []const Row) !ExecuteResult {
+        const expr_count = sel.result_exprs.len;
+        const row_count = result_rows.len;
+        var proj_values = try self.allocator.alloc([]Value, row_count);
+        var proj_rows = try self.allocator.alloc(Row, row_count);
+        var alloc_texts: std.ArrayList([]const u8) = .{};
+
+        for (result_rows, 0..) |row, ri| {
+            var values = try self.allocator.alloc(Value, expr_count);
+            for (sel.result_exprs, 0..) |expr, ei| {
+                values[ei] = try self.evalExpr(expr, tbl, row);
+                // Track allocated text values for cleanup
+                if (values[ei] == .text) {
+                    alloc_texts.append(self.allocator, values[ei].text) catch {};
+                }
+            }
+            proj_values[ri] = values;
+            proj_rows[ri] = .{ .values = values };
+        }
+
+        // Apply DISTINCT on evaluated results
+        if (sel.distinct and row_count > 0) {
+            var write_idx: usize = 0;
+            for (0..row_count) |ri| {
+                var is_dup = false;
+                for (0..write_idx) |pi| {
+                    if (rowsEqual(proj_rows[pi], proj_rows[ri])) {
+                        is_dup = true;
+                        break;
+                    }
+                }
+                if (!is_dup) {
+                    proj_rows[write_idx] = proj_rows[ri];
+                    proj_values[write_idx] = proj_values[ri];
+                    write_idx += 1;
+                } else {
+                    self.allocator.free(proj_values[ri]);
+                }
+            }
+            proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
+            proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
+        }
+
+        self.projected_rows = proj_rows;
+        self.projected_values = proj_values;
+        if (alloc_texts.items.len > 0) {
+            self.projected_texts = alloc_texts.toOwnedSlice(self.allocator) catch null;
+        } else {
+            alloc_texts.deinit(self.allocator);
+        }
+        return .{ .rows = proj_rows };
     }
 
     fn projectColumns(self: *Database, sel: Statement.Select, table: *const Table, result_rows: []const Row) !ExecuteResult {
@@ -1085,6 +1255,7 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
+                defer self.allocator.free(sel.result_exprs);
                 return self.executeSelect(sel);
             },
             .delete => |del| {

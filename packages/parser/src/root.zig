@@ -63,12 +63,38 @@ pub const AggFunc = enum {
     max,
 };
 
+pub const BinOp = enum {
+    add, // +
+    sub, // -
+    mul, // *
+    div, // /
+    concat, // ||
+};
+
+pub const Expr = union(enum) {
+    integer_literal: i64,
+    string_literal: []const u8,
+    column_ref: []const u8,
+    null_literal: void,
+    star: void, // for COUNT(*)
+    binary_op: struct {
+        op: BinOp,
+        left: *const Expr,
+        right: *const Expr,
+    },
+    aggregate: struct {
+        func: AggFunc,
+        arg: *const Expr, // inner expression (column_ref or star)
+    },
+};
+
 pub const SelectExpr = union(enum) {
     column: []const u8,
     aggregate: struct {
         func: AggFunc,
         arg: []const u8, // column name or "*"
     },
+    expr: *const Expr,
 };
 
 pub const JoinType = enum {
@@ -119,6 +145,7 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         columns: []const []const u8, // empty = * (plain column names for backward compat)
         select_exprs: []const SelectExpr, // full expression list (includes aggregates)
+        result_exprs: []const *const Expr, // parsed expression ASTs for each SELECT item
         distinct: bool,
         join: ?JoinClause,
         where: ?WhereClause,
@@ -355,28 +382,27 @@ pub const Parser = struct {
 
         var columns: std.ArrayList([]const u8) = .{};
         var select_exprs: std.ArrayList(SelectExpr) = .{};
+        var result_exprs: std.ArrayList(*const Expr) = .{};
 
         if (self.peek().type == .star) {
             _ = self.advance();
         } else {
             while (true) {
-                // Check for aggregate function
-                if (isAggFunc(self.peek().type)) |func| {
-                    _ = self.advance(); // consume func keyword
-                    _ = try self.expect(.lparen);
-                    const arg_tok = self.advance();
-                    const arg: []const u8 = switch (arg_tok.type) {
-                        .star => "*",
-                        .identifier => arg_tok.lexeme,
-                        else => return ParseError.UnexpectedToken,
-                    };
-                    _ = try self.expect(.rparen);
-                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = func, .arg = arg } }) catch return ParseError.OutOfMemory;
+                // Parse each SELECT item as a full expression
+                const expr = try self.parseExpr();
+                result_exprs.append(self.allocator, expr) catch return ParseError.OutOfMemory;
+
+                // Also populate legacy columns/select_exprs for backward compat
+                if (exprAsAggregate(expr)) |agg| {
+                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = agg.func, .arg = agg.arg } }) catch return ParseError.OutOfMemory;
+                } else if (exprAsColumnName(expr)) |name| {
+                    columns.append(self.allocator, name) catch return ParseError.OutOfMemory;
+                    select_exprs.append(self.allocator, .{ .column = name }) catch return ParseError.OutOfMemory;
                 } else {
-                    const col_tok = try self.expect(.identifier);
-                    columns.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
-                    select_exprs.append(self.allocator, .{ .column = col_tok.lexeme }) catch return ParseError.OutOfMemory;
+                    // Complex expression — store as expr variant in SelectExpr
+                    select_exprs.append(self.allocator, .{ .expr = expr }) catch return ParseError.OutOfMemory;
                 }
+
                 if (self.peek().type == .comma) {
                     _ = self.advance();
                 } else {
@@ -461,6 +487,7 @@ pub const Parser = struct {
                 .table_name = table_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .distinct = distinct,
                 .join = join,
                 .where = where,
@@ -522,6 +549,160 @@ pub const Parser = struct {
             .column = col_tok.lexeme,
             .order = order,
         };
+    }
+
+    // ---- Expression parser (recursive descent with precedence) ----
+
+    fn allocExpr(self: *Parser, expr: Expr) ParseError!*const Expr {
+        const ptr = self.allocator.create(Expr) catch return ParseError.OutOfMemory;
+        ptr.* = expr;
+        return ptr;
+    }
+
+    /// Parse an expression: handles lowest-precedence operators (+, -, ||)
+    pub fn parseExpr(self: *Parser) ParseError!*const Expr {
+        var left = try self.parseMulDiv();
+
+        while (true) {
+            const op: BinOp = switch (self.peek().type) {
+                .plus => .add,
+                .minus => .sub,
+                .concat => .concat,
+                else => break,
+            };
+            _ = self.advance();
+            const right = try self.parseMulDiv();
+            left = try self.allocExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+        }
+
+        return left;
+    }
+
+    /// Parse *, / (higher precedence)
+    fn parseMulDiv(self: *Parser) ParseError!*const Expr {
+        var left = try self.parsePrimary();
+
+        while (true) {
+            const op: BinOp = switch (self.peek().type) {
+                .star => .mul,
+                .divide => .div,
+                else => break,
+            };
+            _ = self.advance();
+            const right = try self.parsePrimary();
+            left = try self.allocExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+        }
+
+        return left;
+    }
+
+    /// Parse primary expressions: literals, column refs, aggregates, parenthesized exprs
+    fn parsePrimary(self: *Parser) ParseError!*const Expr {
+        const tok = self.peek();
+
+        // Aggregate function
+        if (isAggFunc(tok.type)) |func| {
+            _ = self.advance();
+            _ = try self.expect(.lparen);
+            const arg_tok = self.peek();
+            const arg_expr = if (arg_tok.type == .star) blk: {
+                _ = self.advance();
+                break :blk try self.allocExpr(.{ .star = {} });
+            } else try self.parseExpr();
+            _ = try self.expect(.rparen);
+            return self.allocExpr(.{ .aggregate = .{ .func = func, .arg = arg_expr } });
+        }
+
+        // Parenthesized expression
+        if (tok.type == .lparen) {
+            _ = self.advance();
+            const inner = try self.parseExpr();
+            _ = try self.expect(.rparen);
+            return inner;
+        }
+
+        // Integer literal
+        if (tok.type == .integer_literal) {
+            _ = self.advance();
+            const num = std.fmt.parseInt(i64, tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            return self.allocExpr(.{ .integer_literal = num });
+        }
+
+        // String literal
+        if (tok.type == .string_literal) {
+            _ = self.advance();
+            // Strip quotes
+            if (tok.lexeme.len >= 2) {
+                return self.allocExpr(.{ .string_literal = tok.lexeme[1 .. tok.lexeme.len - 1] });
+            }
+            return self.allocExpr(.{ .string_literal = tok.lexeme });
+        }
+
+        // NULL
+        if (tok.type == .kw_null) {
+            _ = self.advance();
+            return self.allocExpr(.{ .null_literal = {} });
+        }
+
+        // Star (for SELECT *)
+        if (tok.type == .star) {
+            _ = self.advance();
+            return self.allocExpr(.{ .star = {} });
+        }
+
+        // Identifier (column reference)
+        if (tok.type == .identifier) {
+            _ = self.advance();
+            return self.allocExpr(.{ .column_ref = tok.lexeme });
+        }
+
+        return ParseError.UnexpectedToken;
+    }
+
+    /// Helper: check if Expr is a simple column reference and return its name
+    pub fn exprAsColumnName(expr: *const Expr) ?[]const u8 {
+        return switch (expr.*) {
+            .column_ref => |name| name,
+            else => null,
+        };
+    }
+
+    /// Helper: check if Expr is a simple aggregate and extract func/arg
+    pub fn exprAsAggregate(expr: *const Expr) ?struct { func: AggFunc, arg: []const u8 } {
+        return switch (expr.*) {
+            .aggregate => |agg| {
+                const arg_name: []const u8 = switch (agg.arg.*) {
+                    .column_ref => |name| name,
+                    .star => "*",
+                    else => return null,
+                };
+                return .{ .func = agg.func, .arg = arg_name };
+            },
+            else => null,
+        };
+    }
+
+    /// Recursively free an Expr tree
+    pub fn freeExpr(allocator: std.mem.Allocator, expr: *const Expr) void {
+        switch (expr.*) {
+            .binary_op => |bin| {
+                freeExpr(allocator, bin.left);
+                freeExpr(allocator, bin.right);
+            },
+            .aggregate => |agg| {
+                freeExpr(allocator, agg.arg);
+            },
+            else => {},
+        }
+        allocator.destroy(@constCast(expr));
+    }
+
+    /// Free a slice of Expr pointers
+    pub fn freeExprSlice(allocator: std.mem.Allocator, exprs: []const *const Expr) void {
+        for (exprs) |expr| {
+            freeExpr(allocator, expr);
+        }
+        allocator.free(exprs);
     }
 
     fn parseCompOp(self: *Parser) ParseError!CompOp {
@@ -804,6 +985,7 @@ test "parse SELECT" {
     switch (stmt) {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
+            defer allocator.free(sel.result_exprs);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
             try std.testing.expectEqual(@as(?WhereClause, null), sel.where);
@@ -824,6 +1006,7 @@ test "parse SELECT with WHERE" {
     switch (stmt) {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
+            defer allocator.free(sel.result_exprs);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expect(sel.where != null);
             try std.testing.expectEqualStrings("id", sel.where.?.column);
@@ -885,6 +1068,7 @@ test "parse SELECT with ORDER BY" {
     switch (stmt) {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
+            defer allocator.free(sel.result_exprs);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expect(sel.order_by != null);
             try std.testing.expectEqualStrings("name", sel.order_by.?.column);
@@ -908,6 +1092,7 @@ test "parse SELECT with LIMIT OFFSET" {
     switch (stmt) {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
+            defer allocator.free(sel.result_exprs);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(?i64, 10), sel.limit);
             try std.testing.expectEqual(@as(?i64, 5), sel.offset);
@@ -946,6 +1131,7 @@ test "parse SELECT COUNT(*)" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.select_exprs);
+            defer Parser.freeExprSlice(allocator, sel.result_exprs);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
             try std.testing.expectEqual(@as(usize, 1), sel.select_exprs.len);
             try std.testing.expectEqual(SelectExpr{ .aggregate = .{ .func = .count, .arg = "*" } }, sel.select_exprs[0]);
@@ -967,6 +1153,7 @@ test "parse SELECT with multiple aggregates" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.select_exprs);
+            defer Parser.freeExprSlice(allocator, sel.result_exprs);
             try std.testing.expectEqual(@as(usize, 3), sel.select_exprs.len);
             try std.testing.expectEqual(AggFunc.count, sel.select_exprs[0].aggregate.func);
             try std.testing.expectEqual(AggFunc.sum, sel.select_exprs[1].aggregate.func);

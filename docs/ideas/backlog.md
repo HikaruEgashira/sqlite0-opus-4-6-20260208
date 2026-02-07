@@ -15,11 +15,17 @@
 - ~~DISTINCT~~ ✓
 - ~~NULL値の適切なハンドリング~~ ✓
 - ~~ALTER TABLE~~ ✓
+- Expression Evaluation（算術式、文字列結合、括弧） ← Phase 6a
+- INSERT INTO ... SELECT
+- CASE WHEN式
+- LIKE / GLOB演算子
+- UNION / UNION ALL / INTERSECT / EXCEPT
+- 複数カラムのUPDATE SET
 
 ## ストレージ
-- B-Tree ベースのページ管理
-- SQLite3互換のファイルフォーマット
-- WAL (Write-Ahead Logging)
+- B-Tree ベースのページ管理 ← Phase 6b
+- SQLite3互換のファイルフォーマット ← Phase 6c
+- WAL (Write-Ahead Logging) ← Phase 6d
 - ~~トランザクション (BEGIN/COMMIT/ROLLBACK)~~ ✓
 
 ## 品質保証
