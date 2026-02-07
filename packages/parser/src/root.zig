@@ -96,6 +96,7 @@ pub const Statement = union(enum) {
     delete: Delete,
     update: Update,
     drop_table: DropTable,
+    alter_table: AlterTable,
 
     pub const CreateTable = struct {
         table_name: []const u8,
@@ -136,6 +137,17 @@ pub const Statement = union(enum) {
     pub const DropTable = struct {
         table_name: []const u8,
     };
+
+    pub const AlterTable = union(enum) {
+        add_column: struct {
+            table_name: []const u8,
+            column: ColumnDef,
+        },
+        rename_to: struct {
+            table_name: []const u8,
+            new_name: []const u8,
+        },
+    };
 };
 
 pub const ParseError = error{
@@ -166,6 +178,7 @@ pub const Parser = struct {
             .kw_delete => self.parseDelete(),
             .kw_update => self.parseUpdate(),
             .kw_drop => self.parseDropTable(),
+            .kw_alter => self.parseAlterTable(),
             else => ParseError.UnexpectedToken,
         };
     }
@@ -578,6 +591,46 @@ pub const Parser = struct {
         return Statement{ .drop_table = .{
             .table_name = name_tok.lexeme,
         } };
+    }
+
+    fn parseAlterTable(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_alter);
+        _ = try self.expect(.kw_table);
+        const name_tok = try self.expect(.identifier);
+
+        if (self.peek().type == .kw_add) {
+            // ALTER TABLE t ADD COLUMN col TYPE;
+            _ = self.advance();
+            // COLUMN keyword is optional in SQLite3
+            if (self.peek().type == .kw_column) _ = self.advance();
+            const col_name = try self.expect(.identifier);
+            const col_type_tok = self.advance();
+            const col_type_str: []const u8 = switch (col_type_tok.type) {
+                .kw_integer => "INTEGER",
+                .kw_text => "TEXT",
+                else => return ParseError.UnexpectedToken,
+            };
+            _ = try self.expect(.semicolon);
+            return Statement{ .alter_table = .{ .add_column = .{
+                .table_name = name_tok.lexeme,
+                .column = .{
+                    .name = col_name.lexeme,
+                    .col_type = col_type_str,
+                    .is_primary_key = false,
+                },
+            } } };
+        } else if (self.peek().type == .kw_rename) {
+            // ALTER TABLE t RENAME TO new_name;
+            _ = self.advance();
+            _ = try self.expect(.kw_to);
+            const new_name_tok = try self.expect(.identifier);
+            _ = try self.expect(.semicolon);
+            return Statement{ .alter_table = .{ .rename_to = .{
+                .table_name = name_tok.lexeme,
+                .new_name = new_name_tok.lexeme,
+            } } };
+        }
+        return ParseError.UnexpectedToken;
     }
 };
 

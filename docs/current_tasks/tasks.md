@@ -5,10 +5,10 @@
 ### 完了
 - [x] DISTINCT
 - [x] HAVING句
+- [x] ALTER TABLE (ADD COLUMN, RENAME TO)
 
 ### 未実装
 - [ ] サブクエリ
-- [ ] ALTER TABLE
 - [ ] CREATE INDEX
 
 ## 次のタスク

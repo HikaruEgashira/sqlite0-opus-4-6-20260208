@@ -893,6 +893,49 @@ pub const Database = struct {
                 }
                 return .{ .err = "table not found" };
             },
+            .alter_table => |alt| {
+                switch (alt) {
+                    .add_column => |ac| {
+                        if (self.tables.getPtr(ac.table_name)) |table| {
+                            // Extend columns array
+                            const old_cols = table.columns;
+                            const new_col_count = old_cols.len + 1;
+                            var new_cols = self.allocator.alloc(Column, new_col_count) catch return .{ .err = "out of memory" };
+                            @memcpy(new_cols[0..old_cols.len], old_cols);
+                            new_cols[old_cols.len] = .{
+                                .name = dupeStr(self.allocator, ac.column.name) catch return .{ .err = "out of memory" },
+                                .col_type = ac.column.col_type,
+                                .is_primary_key = false,
+                            };
+                            self.allocator.free(old_cols);
+                            table.columns = new_cols;
+
+                            // Extend each existing row with null_val
+                            for (table.rows.items) |*row| {
+                                const old_vals = row.values;
+                                var new_vals = self.allocator.alloc(Value, new_col_count) catch return .{ .err = "out of memory" };
+                                @memcpy(new_vals[0..old_vals.len], old_vals);
+                                new_vals[old_vals.len] = .null_val;
+                                self.allocator.free(old_vals);
+                                row.values = new_vals;
+                            }
+                            return .ok;
+                        }
+                        return .{ .err = "table not found" };
+                    },
+                    .rename_to => |rn| {
+                        if (self.tables.fetchRemove(rn.table_name)) |entry| {
+                            var table = entry.value;
+                            // Free old name and set new one
+                            self.allocator.free(table.name);
+                            table.name = dupeStr(self.allocator, rn.new_name) catch return .{ .err = "out of memory" };
+                            self.tables.put(table.name, table) catch return .{ .err = "out of memory" };
+                            return .ok;
+                        }
+                        return .{ .err = "table not found" };
+                    },
+                }
+            },
         }
     }
 

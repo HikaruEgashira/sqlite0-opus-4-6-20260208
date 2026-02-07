@@ -1,0 +1,13 @@
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
+INSERT INTO items VALUES (1, 'apple');
+INSERT INTO items VALUES (2, 'banana');
+ALTER TABLE items ADD COLUMN price INTEGER;
+SELECT * FROM items;
+INSERT INTO items VALUES (3, 'cherry', 300);
+SELECT * FROM items;
+ALTER TABLE items RENAME TO products;
+SELECT * FROM products;
+INSERT INTO products VALUES (4, 'date', 400);
+SELECT * FROM products;
+ALTER TABLE products ADD price2 TEXT;
+SELECT * FROM products;

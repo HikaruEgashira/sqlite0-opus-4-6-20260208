@@ -14,7 +14,7 @@
 - ~~HAVING句~~ ✓
 - ~~DISTINCT~~ ✓
 - ~~NULL値の適切なハンドリング~~ ✓
-- ALTER TABLE
+- ~~ALTER TABLE~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理

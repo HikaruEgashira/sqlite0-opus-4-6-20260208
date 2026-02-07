@@ -41,6 +41,11 @@ pub const TokenType = enum {
     kw_having,
     kw_null,
     kw_is,
+    kw_alter,
+    kw_add,
+    kw_column,
+    kw_rename,
+    kw_to,
 
     // Literals
     integer_literal,
@@ -221,6 +226,11 @@ pub const Tokenizer = struct {
             .{ "HAVING", TokenType.kw_having },
             .{ "NULL", TokenType.kw_null },
             .{ "IS", TokenType.kw_is },
+            .{ "ALTER", TokenType.kw_alter },
+            .{ "ADD", TokenType.kw_add },
+            .{ "COLUMN", TokenType.kw_column },
+            .{ "RENAME", TokenType.kw_rename },
+            .{ "TO", TokenType.kw_to },
         };
 
         inline for (keywords) |entry| {
