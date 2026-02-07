@@ -1,0 +1,218 @@
+const std = @import("std");
+
+pub const TokenType = enum {
+    // Keywords
+    kw_select,
+    kw_from,
+    kw_where,
+    kw_insert,
+    kw_into,
+    kw_values,
+    kw_create,
+    kw_table,
+    kw_integer,
+    kw_text,
+    kw_primary,
+    kw_key,
+
+    // Literals
+    integer_literal,
+    string_literal,
+    identifier,
+
+    // Symbols
+    semicolon,
+    comma,
+    lparen,
+    rparen,
+    star,
+    equals,
+
+    // Special
+    eof,
+    invalid,
+};
+
+pub const Token = struct {
+    type: TokenType,
+    lexeme: []const u8,
+};
+
+pub const Tokenizer = struct {
+    source: []const u8,
+    pos: usize,
+
+    pub fn init(source: []const u8) Tokenizer {
+        return .{ .source = source, .pos = 0 };
+    }
+
+    pub fn next(self: *Tokenizer) Token {
+        self.skipWhitespace();
+
+        if (self.pos >= self.source.len) {
+            return .{ .type = .eof, .lexeme = "" };
+        }
+
+        const c = self.source[self.pos];
+
+        // Single-character tokens
+        const single_token: ?TokenType = switch (c) {
+            ';' => .semicolon,
+            ',' => .comma,
+            '(' => .lparen,
+            ')' => .rparen,
+            '*' => .star,
+            '=' => .equals,
+            else => null,
+        };
+
+        if (single_token) |tt| {
+            const lexeme = self.source[self.pos .. self.pos + 1];
+            self.pos += 1;
+            return .{ .type = tt, .lexeme = lexeme };
+        }
+
+        // String literal
+        if (c == '\'') {
+            return self.readString();
+        }
+
+        // Integer literal
+        if (std.ascii.isDigit(c)) {
+            return self.readInteger();
+        }
+
+        // Identifier or keyword
+        if (std.ascii.isAlphabetic(c) or c == '_') {
+            return self.readIdentifierOrKeyword();
+        }
+
+        self.pos += 1;
+        return .{ .type = .invalid, .lexeme = self.source[self.pos - 1 .. self.pos] };
+    }
+
+    fn skipWhitespace(self: *Tokenizer) void {
+        while (self.pos < self.source.len and std.ascii.isWhitespace(self.source[self.pos])) {
+            self.pos += 1;
+        }
+    }
+
+    fn readString(self: *Tokenizer) Token {
+        const start = self.pos;
+        self.pos += 1; // skip opening quote
+        while (self.pos < self.source.len and self.source[self.pos] != '\'') {
+            self.pos += 1;
+        }
+        if (self.pos < self.source.len) {
+            self.pos += 1; // skip closing quote
+        }
+        return .{ .type = .string_literal, .lexeme = self.source[start..self.pos] };
+    }
+
+    fn readInteger(self: *Tokenizer) Token {
+        const start = self.pos;
+        while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
+            self.pos += 1;
+        }
+        return .{ .type = .integer_literal, .lexeme = self.source[start..self.pos] };
+    }
+
+    fn readIdentifierOrKeyword(self: *Tokenizer) Token {
+        const start = self.pos;
+        while (self.pos < self.source.len and (std.ascii.isAlphanumeric(self.source[self.pos]) or self.source[self.pos] == '_')) {
+            self.pos += 1;
+        }
+        const lexeme = self.source[start..self.pos];
+        const tt = classifyKeyword(lexeme);
+        return .{ .type = tt, .lexeme = lexeme };
+    }
+
+    fn classifyKeyword(lexeme: []const u8) TokenType {
+        const keywords = .{
+            .{ "SELECT", TokenType.kw_select },
+            .{ "FROM", TokenType.kw_from },
+            .{ "WHERE", TokenType.kw_where },
+            .{ "INSERT", TokenType.kw_insert },
+            .{ "INTO", TokenType.kw_into },
+            .{ "VALUES", TokenType.kw_values },
+            .{ "CREATE", TokenType.kw_create },
+            .{ "TABLE", TokenType.kw_table },
+            .{ "INTEGER", TokenType.kw_integer },
+            .{ "TEXT", TokenType.kw_text },
+            .{ "PRIMARY", TokenType.kw_primary },
+            .{ "KEY", TokenType.kw_key },
+        };
+
+        inline for (keywords) |entry| {
+            if (std.ascii.eqlIgnoreCase(lexeme, entry[0])) {
+                return entry[1];
+            }
+        }
+
+        return .identifier;
+    }
+
+    pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) ![]Token {
+        var tokens: std.ArrayList(Token) = .{};
+        defer tokens.deinit(allocator);
+
+        while (true) {
+            const tok = self.next();
+            try tokens.append(allocator, tok);
+            if (tok.type == .eof) break;
+        }
+
+        return try tokens.toOwnedSlice(allocator);
+    }
+};
+
+test "tokenize SELECT * FROM table" {
+    var t = Tokenizer.init("SELECT * FROM users;");
+    try std.testing.expectEqual(TokenType.kw_select, t.next().type);
+    try std.testing.expectEqual(TokenType.star, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_from, t.next().type);
+    try std.testing.expectEqual(TokenType.identifier, t.next().type);
+    try std.testing.expectEqual(TokenType.semicolon, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
+
+test "tokenize CREATE TABLE" {
+    var t = Tokenizer.init("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);");
+    try std.testing.expectEqual(TokenType.kw_create, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_table, t.next().type);
+    try std.testing.expectEqual(TokenType.identifier, t.next().type);
+    try std.testing.expectEqual(TokenType.lparen, t.next().type);
+    try std.testing.expectEqual(TokenType.identifier, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_integer, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_primary, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_key, t.next().type);
+    try std.testing.expectEqual(TokenType.comma, t.next().type);
+    try std.testing.expectEqual(TokenType.identifier, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_text, t.next().type);
+    try std.testing.expectEqual(TokenType.rparen, t.next().type);
+    try std.testing.expectEqual(TokenType.semicolon, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
+
+test "tokenize INSERT INTO" {
+    var t = Tokenizer.init("INSERT INTO users VALUES (1, 'alice');");
+    try std.testing.expectEqual(TokenType.kw_insert, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_into, t.next().type);
+    try std.testing.expectEqual(TokenType.identifier, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_values, t.next().type);
+    try std.testing.expectEqual(TokenType.lparen, t.next().type);
+    try std.testing.expectEqual(TokenType.integer_literal, t.next().type);
+    try std.testing.expectEqual(TokenType.comma, t.next().type);
+    try std.testing.expectEqual(TokenType.string_literal, t.next().type);
+    try std.testing.expectEqual(TokenType.rparen, t.next().type);
+    try std.testing.expectEqual(TokenType.semicolon, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
+
+test "case insensitive keywords" {
+    var t = Tokenizer.init("select FROM Select");
+    try std.testing.expectEqual(TokenType.kw_select, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_from, t.next().type);
+    try std.testing.expectEqual(TokenType.kw_select, t.next().type);
+    try std.testing.expectEqual(TokenType.eof, t.next().type);
+}
