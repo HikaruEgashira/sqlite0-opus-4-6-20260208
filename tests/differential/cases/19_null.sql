@@ -1,0 +1,11 @@
+CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT);
+INSERT INTO users VALUES (1, 'alice', 'alice@example.com');
+INSERT INTO users VALUES (2, 'bob', NULL);
+INSERT INTO users VALUES (3, NULL, 'charlie@example.com');
+INSERT INTO users VALUES (4, NULL, NULL);
+SELECT * FROM users;
+SELECT * FROM users WHERE name IS NULL;
+SELECT * FROM users WHERE name IS NOT NULL;
+SELECT * FROM users WHERE email IS NULL;
+SELECT * FROM users WHERE name IS NOT NULL AND email IS NOT NULL;
+SELECT COUNT(*) FROM users WHERE name IS NULL;

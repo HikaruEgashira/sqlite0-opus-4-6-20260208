@@ -13,5 +13,4 @@
 
 ## 次のタスク
 - B-Treeストレージの設計
-- NULL値の適切なハンドリング
 - トランザクション (BEGIN/COMMIT/ROLLBACK)

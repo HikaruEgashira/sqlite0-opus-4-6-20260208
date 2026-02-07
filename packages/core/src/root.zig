@@ -57,7 +57,9 @@ pub const Table = struct {
     pub fn insertRow(self: *Table, raw_values: []const []const u8) !void {
         var values = try self.allocator.alloc(Value, raw_values.len);
         for (raw_values, 0..) |raw, i| {
-            if (raw.len >= 2 and raw[0] == '\'') {
+            if (std.mem.eql(u8, raw, "NULL")) {
+                values[i] = .null_val;
+            } else if (raw.len >= 2 and raw[0] == '\'') {
                 values[i] = .{ .text = try dupeStr(self.allocator, raw[1 .. raw.len - 1]) };
             } else {
                 const num = std.fmt.parseInt(i64, raw, 10) catch {
@@ -80,6 +82,9 @@ pub const Table = struct {
     fn matchesSingleCondition(self: *const Table, row: Row, column: []const u8, op: CompOp, value: []const u8) bool {
         const col_idx = self.findColumnIndex(column) orelse return false;
         const val = row.values[col_idx];
+        // Handle IS NULL / IS NOT NULL
+        if (op == .is_null) return val == .null_val;
+        if (op == .is_not_null) return val != .null_val;
         const where_val = parseRawValue(value);
         return compareValues(val, where_val, op);
     }
@@ -109,6 +114,11 @@ pub const Table = struct {
     }
 
     fn compareValues(a: Value, b: Value, op: CompOp) bool {
+        // NULL comparisons: any comparison involving NULL returns false (SQL standard)
+        if (a == .null_val or b == .null_val) return false;
+        // IS NULL / IS NOT NULL handled in matchesSingleCondition
+        if (op == .is_null or op == .is_not_null) return false;
+
         // Integer vs Integer
         if (a == .integer and b == .integer) {
             return switch (op) {
@@ -118,6 +128,7 @@ pub const Table = struct {
                 .le => a.integer <= b.integer,
                 .gt => a.integer > b.integer,
                 .ge => a.integer >= b.integer,
+                .is_null, .is_not_null => unreachable,
             };
         }
         // Text vs Text
@@ -130,6 +141,7 @@ pub const Table = struct {
                 .le => ord == .lt or ord == .eq,
                 .gt => ord == .gt,
                 .ge => ord == .gt or ord == .eq,
+                .is_null, .is_not_null => unreachable,
             };
         }
         // Mismatched types: only eq/ne are meaningful

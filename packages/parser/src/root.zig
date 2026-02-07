@@ -28,6 +28,8 @@ pub const CompOp = enum {
     le,
     gt,
     ge,
+    is_null,
+    is_not_null,
 };
 
 pub const LogicOp = enum {
@@ -254,6 +256,9 @@ pub const Parser = struct {
                 .integer_literal, .string_literal, .identifier => {
                     values.append(self.allocator, val_tok.lexeme) catch return ParseError.OutOfMemory;
                 },
+                .kw_null => {
+                    values.append(self.allocator, "NULL") catch return ParseError.OutOfMemory;
+                },
                 else => return ParseError.UnexpectedToken,
             }
 
@@ -477,17 +482,33 @@ pub const Parser = struct {
         };
     }
 
-    fn parseWhereClause(self: *Parser) ParseError!WhereClause {
-        _ = try self.expect(.kw_where);
-
-        // Parse first condition
+    fn parseWhereCondition(self: *Parser) ParseError!WhereCondition {
         const col_tok = try self.expect(.identifier);
+        // Check for IS NULL / IS NOT NULL
+        if (self.peek().type == .kw_is) {
+            _ = self.advance();
+            if (self.peek().type == .kw_not) {
+                _ = self.advance();
+                _ = try self.expect(.kw_null);
+                return .{ .column = col_tok.lexeme, .op = .is_not_null, .value = "" };
+            }
+            _ = try self.expect(.kw_null);
+            return .{ .column = col_tok.lexeme, .op = .is_null, .value = "" };
+        }
         const op = try self.parseCompOp();
         const val_tok = self.advance();
         switch (val_tok.type) {
             .integer_literal, .string_literal, .identifier => {},
             else => return ParseError.UnexpectedToken,
         }
+        return .{ .column = col_tok.lexeme, .op = op, .value = val_tok.lexeme };
+    }
+
+    fn parseWhereClause(self: *Parser) ParseError!WhereClause {
+        _ = try self.expect(.kw_where);
+
+        // Parse first condition
+        const first = try self.parseWhereCondition();
 
         // Parse additional AND/OR conditions
         var extra: std.ArrayList(WhereCondition) = .{};
@@ -498,24 +519,14 @@ pub const Parser = struct {
             _ = self.advance();
             connectors.append(self.allocator, logic_op) catch return ParseError.OutOfMemory;
 
-            const next_col = try self.expect(.identifier);
-            const next_op = try self.parseCompOp();
-            const next_val = self.advance();
-            switch (next_val.type) {
-                .integer_literal, .string_literal, .identifier => {},
-                else => return ParseError.UnexpectedToken,
-            }
-            extra.append(self.allocator, .{
-                .column = next_col.lexeme,
-                .op = next_op,
-                .value = next_val.lexeme,
-            }) catch return ParseError.OutOfMemory;
+            const cond = try self.parseWhereCondition();
+            extra.append(self.allocator, cond) catch return ParseError.OutOfMemory;
         }
 
         return .{
-            .column = col_tok.lexeme,
-            .op = op,
-            .value = val_tok.lexeme,
+            .column = first.column,
+            .op = first.op,
+            .value = first.value,
             .extra = extra.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             .connectors = connectors.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
         };

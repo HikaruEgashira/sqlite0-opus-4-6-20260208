@@ -13,7 +13,7 @@
 - サブクエリ
 - ~~HAVING句~~ ✓
 - ~~DISTINCT~~ ✓
-- NULL値の適切なハンドリング
+- ~~NULL値の適切なハンドリング~~ ✓
 - ALTER TABLE
 
 ## ストレージ
