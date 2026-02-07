@@ -235,6 +235,12 @@ fn rowsEqual(a: Row, b: Row) bool {
     return true;
 }
 
+const TableSnapshot = struct {
+    name: []const u8,
+    columns: []const Column,
+    rows: []const Row,
+};
+
 pub const Database = struct {
     tables: std.StringHashMap(Table),
     allocator: std.mem.Allocator,
@@ -242,6 +248,9 @@ pub const Database = struct {
     projected_rows: ?[]Row = null,
     projected_values: ?[][]Value = null,
     projected_texts: ?[][]const u8 = null, // Text values allocated by aggregate functions
+    // Transaction state
+    in_transaction: bool = false,
+    transaction_snapshot: ?[]TableSnapshot = null,
 
     pub fn init(allocator: std.mem.Allocator) Database {
         return .{
@@ -252,6 +261,7 @@ pub const Database = struct {
 
     pub fn deinit(self: *Database) void {
         self.freeProjected();
+        self.freeSnapshot();
         var it = self.tables.valueIterator();
         while (it.next()) |table| {
             table.deinit();
@@ -278,6 +288,107 @@ pub const Database = struct {
             self.allocator.free(pr);
             self.projected_rows = null;
         }
+    }
+
+    fn freeSnapshot(self: *Database) void {
+        if (self.transaction_snapshot) |snapshots| {
+            for (snapshots) |snap| {
+                for (snap.rows) |row| {
+                    for (row.values) |val| {
+                        switch (val) {
+                            .text => |t| self.allocator.free(t),
+                            else => {},
+                        }
+                    }
+                    self.allocator.free(row.values);
+                }
+                self.allocator.free(snap.rows);
+                for (snap.columns) |col| {
+                    self.allocator.free(col.name);
+                }
+                self.allocator.free(snap.columns);
+                self.allocator.free(snap.name);
+            }
+            self.allocator.free(snapshots);
+            self.transaction_snapshot = null;
+        }
+    }
+
+    fn takeSnapshot(self: *Database) !void {
+        var snapshots: std.ArrayList(TableSnapshot) = .{};
+        var it = self.tables.iterator();
+        while (it.next()) |entry| {
+            const table = entry.value_ptr;
+            // Deep copy columns
+            var cols = try self.allocator.alloc(Column, table.columns.len);
+            for (table.columns, 0..) |col, i| {
+                cols[i] = .{
+                    .name = try dupeStr(self.allocator, col.name),
+                    .col_type = col.col_type,
+                    .is_primary_key = col.is_primary_key,
+                };
+            }
+            // Deep copy rows
+            var rows = try self.allocator.alloc(Row, table.rows.items.len);
+            for (table.rows.items, 0..) |row, ri| {
+                var values = try self.allocator.alloc(Value, row.values.len);
+                for (row.values, 0..) |val, vi| {
+                    values[vi] = switch (val) {
+                        .text => |t| .{ .text = try dupeStr(self.allocator, t) },
+                        .integer => |n| .{ .integer = n },
+                        .null_val => .null_val,
+                    };
+                }
+                rows[ri] = .{ .values = values };
+            }
+            try snapshots.append(self.allocator, .{
+                .name = try dupeStr(self.allocator, table.name),
+                .columns = cols,
+                .rows = rows,
+            });
+        }
+        self.transaction_snapshot = try snapshots.toOwnedSlice(self.allocator);
+    }
+
+    fn restoreSnapshot(self: *Database) !void {
+        if (self.transaction_snapshot == null) return;
+        const snapshots = self.transaction_snapshot.?;
+
+        // Drop all current tables
+        var it = self.tables.valueIterator();
+        while (it.next()) |table| {
+            table.deinit();
+        }
+        self.tables.clearRetainingCapacity();
+
+        // Restore from snapshot
+        for (snapshots) |snap| {
+            const table_name = try dupeStr(self.allocator, snap.name);
+            var cols = try self.allocator.alloc(Column, snap.columns.len);
+            for (snap.columns, 0..) |col, i| {
+                cols[i] = .{
+                    .name = try dupeStr(self.allocator, col.name),
+                    .col_type = col.col_type,
+                    .is_primary_key = col.is_primary_key,
+                };
+            }
+            var table = Table.init(self.allocator, table_name, cols);
+            for (snap.rows) |row| {
+                var values = try self.allocator.alloc(Value, row.values.len);
+                for (row.values, 0..) |val, vi| {
+                    values[vi] = switch (val) {
+                        .text => |t| .{ .text = try dupeStr(self.allocator, t) },
+                        .integer => |n| .{ .integer = n },
+                        .null_val => .null_val,
+                    };
+                }
+                try table.rows.append(self.allocator, .{ .values = values });
+            }
+            try self.tables.put(table_name, table);
+        }
+
+        // Free the snapshot
+        self.freeSnapshot();
     }
 
     fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row) !Value {
@@ -537,6 +648,159 @@ pub const Database = struct {
         self.projected_rows = proj_rows;
         self.projected_values = proj_values;
         try self.collectAggTexts(sel.select_exprs, proj_values);
+        return .{ .rows = proj_rows };
+    }
+
+    fn executeSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
+        // Handle JOIN queries
+        if (sel.join != null) {
+            return self.executeJoin(sel);
+        }
+
+        if (self.tables.get(sel.table_name)) |table| {
+            // Collect matching rows (with optional WHERE filter)
+            var matching_rows: std.ArrayList(Row) = .{};
+            defer matching_rows.deinit(self.allocator);
+            for (table.rows.items) |row| {
+                if (sel.where) |where| {
+                    if (!(try self.matchesWhereWithSubquery(&table, row, where))) continue;
+                }
+                try matching_rows.append(self.allocator, row);
+            }
+
+            // Check if this is an aggregate query
+            const has_agg = blk: {
+                for (sel.select_exprs) |expr| {
+                    if (expr == .aggregate) break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (has_agg) {
+                return self.executeAggregate(&table, sel, matching_rows.items);
+            }
+
+            // Apply ORDER BY
+            if (sel.order_by) |order_by| {
+                const sort_col_idx = table.findColumnIndex(order_by.column) orelse {
+                    return .{ .err = "column not found" };
+                };
+                const desc = order_by.order == .desc;
+                const SortCtx = struct {
+                    sort_col_idx: usize,
+                    is_desc: bool,
+                    fn lessThan(ctx: @This(), a: Row, b: Row) bool {
+                        const va = a.values[ctx.sort_col_idx];
+                        const vb = b.values[ctx.sort_col_idx];
+                        const cmp = compareValuesOrder(va, vb);
+                        if (ctx.is_desc) {
+                            return cmp == .gt;
+                        }
+                        return cmp == .lt;
+                    }
+                };
+                std.mem.sort(Row, matching_rows.items, SortCtx{ .sort_col_idx = sort_col_idx, .is_desc = desc }, SortCtx.lessThan);
+            }
+
+            // Apply DISTINCT (remove duplicate rows)
+            if (sel.distinct) {
+                var write_idx: usize = 0;
+                for (matching_rows.items, 0..) |row, ri| {
+                    var is_dup = false;
+                    for (matching_rows.items[0..write_idx]) |prev| {
+                        if (rowsEqual(row, prev)) {
+                            is_dup = true;
+                            break;
+                        }
+                    }
+                    if (!is_dup) {
+                        matching_rows.items[write_idx] = matching_rows.items[ri];
+                        write_idx += 1;
+                    }
+                }
+                matching_rows.shrinkRetainingCapacity(write_idx);
+            }
+
+            // Apply LIMIT/OFFSET
+            const total = matching_rows.items.len;
+            var start: usize = 0;
+            var end_val: usize = total;
+            if (sel.offset) |off| {
+                if (off > 0) {
+                    start = @min(@as(usize, @intCast(off)), total);
+                }
+            }
+            if (sel.limit) |lim| {
+                if (lim >= 0) {
+                    end_val = @min(start + @as(usize, @intCast(lim)), total);
+                }
+            }
+            const result_rows = matching_rows.items[start..end_val];
+
+            if (sel.columns.len == 0 and sel.select_exprs.len == 0) {
+                // SELECT *
+                const proj_rows = try self.allocator.alloc(Row, result_rows.len);
+                @memcpy(proj_rows, result_rows);
+                self.projected_rows = proj_rows;
+                return .{ .rows = proj_rows };
+            }
+
+            return self.projectColumns(sel, &table, result_rows);
+        }
+        return .{ .err = "table not found" };
+    }
+
+    fn projectColumns(self: *Database, sel: Statement.Select, table: *const Table, result_rows: []const Row) !ExecuteResult {
+        var col_indices = try self.allocator.alloc(usize, sel.columns.len);
+        defer self.allocator.free(col_indices);
+        for (sel.columns, 0..) |sel_col, i| {
+            var found = false;
+            for (table.columns, 0..) |tbl_col, j| {
+                if (std.mem.eql(u8, sel_col, tbl_col.name)) {
+                    col_indices[i] = j;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return .{ .err = "column not found" };
+            }
+        }
+        const row_count = result_rows.len;
+        var proj_values = try self.allocator.alloc([]Value, row_count);
+        var proj_rows = try self.allocator.alloc(Row, row_count);
+        for (result_rows, 0..) |row, ri| {
+            var values = try self.allocator.alloc(Value, sel.columns.len);
+            for (col_indices, 0..) |src_idx, dst_idx| {
+                values[dst_idx] = row.values[src_idx];
+            }
+            proj_values[ri] = values;
+            proj_rows[ri] = .{ .values = values };
+        }
+        // Apply DISTINCT on projected columns
+        if (sel.distinct and row_count > 0) {
+            var write_idx: usize = 0;
+            for (0..row_count) |ri| {
+                var is_dup = false;
+                for (0..write_idx) |pi| {
+                    if (rowsEqual(proj_rows[pi], proj_rows[ri])) {
+                        is_dup = true;
+                        break;
+                    }
+                }
+                if (!is_dup) {
+                    proj_rows[write_idx] = proj_rows[ri];
+                    proj_values[write_idx] = proj_values[ri];
+                    write_idx += 1;
+                } else {
+                    self.allocator.free(proj_values[ri]);
+                }
+            }
+            proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
+            proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
+        }
+        self.projected_rows = proj_rows;
+        self.projected_values = proj_values;
         return .{ .rows = proj_rows };
     }
 
@@ -818,153 +1082,7 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
-
-                // Handle JOIN queries
-                if (sel.join != null) {
-                    return self.executeJoin(sel);
-                }
-
-                if (self.tables.get(sel.table_name)) |table| {
-                    // Collect matching rows (with optional WHERE filter)
-                    var matching_rows: std.ArrayList(Row) = .{};
-                    defer matching_rows.deinit(self.allocator);
-                    for (table.rows.items) |row| {
-                        if (sel.where) |where| {
-                            if (!(try self.matchesWhereWithSubquery(&table, row, where))) continue;
-                        }
-                        try matching_rows.append(self.allocator, row);
-                    }
-
-                    // Check if this is an aggregate query
-                    const has_agg = blk: {
-                        for (sel.select_exprs) |expr| {
-                            if (expr == .aggregate) break :blk true;
-                        }
-                        break :blk false;
-                    };
-
-                    if (has_agg) {
-                        return self.executeAggregate(&table, sel, matching_rows.items);
-                    }
-
-                    // Apply ORDER BY
-                    if (sel.order_by) |order_by| {
-                        const sort_col_idx = table.findColumnIndex(order_by.column) orelse {
-                            return .{ .err = "column not found" };
-                        };
-                        const desc = order_by.order == .desc;
-                        const SortCtx = struct {
-                            sort_col_idx: usize,
-                            is_desc: bool,
-                            fn lessThan(ctx: @This(), a: Row, b: Row) bool {
-                                const va = a.values[ctx.sort_col_idx];
-                                const vb = b.values[ctx.sort_col_idx];
-                                const cmp = compareValuesOrder(va, vb);
-                                if (ctx.is_desc) {
-                                    return cmp == .gt;
-                                }
-                                return cmp == .lt;
-                            }
-                        };
-                        std.mem.sort(Row, matching_rows.items, SortCtx{ .sort_col_idx = sort_col_idx, .is_desc = desc }, SortCtx.lessThan);
-                    }
-
-                    // Apply DISTINCT (remove duplicate rows)
-                    if (sel.distinct) {
-                        var write_idx: usize = 0;
-                        for (matching_rows.items, 0..) |row, ri| {
-                            var is_dup = false;
-                            for (matching_rows.items[0..write_idx]) |prev| {
-                                if (rowsEqual(row, prev)) {
-                                    is_dup = true;
-                                    break;
-                                }
-                            }
-                            if (!is_dup) {
-                                matching_rows.items[write_idx] = matching_rows.items[ri];
-                                write_idx += 1;
-                            }
-                        }
-                        matching_rows.shrinkRetainingCapacity(write_idx);
-                    }
-
-                    // Apply LIMIT/OFFSET
-                    const total = matching_rows.items.len;
-                    var start: usize = 0;
-                    var end_val: usize = total;
-                    if (sel.offset) |off| {
-                        if (off > 0) {
-                            start = @min(@as(usize, @intCast(off)), total);
-                        }
-                    }
-                    if (sel.limit) |lim| {
-                        if (lim >= 0) {
-                            end_val = @min(start + @as(usize, @intCast(lim)), total);
-                        }
-                    }
-                    const result_rows = matching_rows.items[start..end_val];
-
-                    if (sel.columns.len == 0 and sel.select_exprs.len == 0) {
-                        // SELECT *
-                        const proj_rows = try self.allocator.alloc(Row, result_rows.len);
-                        @memcpy(proj_rows, result_rows);
-                        self.projected_rows = proj_rows;
-                        return .{ .rows = proj_rows };
-                    }
-                    // Column projection
-                    var col_indices = try self.allocator.alloc(usize, sel.columns.len);
-                    defer self.allocator.free(col_indices);
-                    for (sel.columns, 0..) |sel_col, i| {
-                        var found = false;
-                        for (table.columns, 0..) |tbl_col, j| {
-                            if (std.mem.eql(u8, sel_col, tbl_col.name)) {
-                                col_indices[i] = j;
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            return .{ .err = "column not found" };
-                        }
-                    }
-                    const row_count = result_rows.len;
-                    var proj_values = try self.allocator.alloc([]Value, row_count);
-                    var proj_rows = try self.allocator.alloc(Row, row_count);
-                    for (result_rows, 0..) |row, ri| {
-                        var values = try self.allocator.alloc(Value, sel.columns.len);
-                        for (col_indices, 0..) |src_idx, dst_idx| {
-                            values[dst_idx] = row.values[src_idx];
-                        }
-                        proj_values[ri] = values;
-                        proj_rows[ri] = .{ .values = values };
-                    }
-                    // Apply DISTINCT on projected columns
-                    if (sel.distinct and row_count > 0) {
-                        var write_idx: usize = 0;
-                        for (0..row_count) |ri| {
-                            var is_dup = false;
-                            for (0..write_idx) |pi| {
-                                if (rowsEqual(proj_rows[pi], proj_rows[ri])) {
-                                    is_dup = true;
-                                    break;
-                                }
-                            }
-                            if (!is_dup) {
-                                proj_rows[write_idx] = proj_rows[ri];
-                                proj_values[write_idx] = proj_values[ri];
-                                write_idx += 1;
-                            } else {
-                                self.allocator.free(proj_values[ri]);
-                            }
-                        }
-                        proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
-                        proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
-                    }
-                    self.projected_rows = proj_rows;
-                    self.projected_values = proj_values;
-                    return .{ .rows = proj_rows };
-                }
-                return .{ .err = "table not found" };
+                return self.executeSelect(sel);
             },
             .delete => |del| {
                 if (self.tables.getPtr(del.table_name)) |table| {
@@ -1025,6 +1143,24 @@ pub const Database = struct {
                     return .ok;
                 }
                 return .{ .err = "table not found" };
+            },
+            .begin => {
+                if (self.in_transaction) return .{ .err = "cannot start a transaction within a transaction" };
+                try self.takeSnapshot();
+                self.in_transaction = true;
+                return .ok;
+            },
+            .commit => {
+                if (!self.in_transaction) return .{ .err = "cannot commit - no transaction is active" };
+                self.freeSnapshot();
+                self.in_transaction = false;
+                return .ok;
+            },
+            .rollback => {
+                if (!self.in_transaction) return .{ .err = "cannot rollback - no transaction is active" };
+                try self.restoreSnapshot();
+                self.in_transaction = false;
+                return .ok;
             },
             .alter_table => |alt| {
                 switch (alt) {

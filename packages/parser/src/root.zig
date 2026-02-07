@@ -101,6 +101,9 @@ pub const Statement = union(enum) {
     update: Update,
     drop_table: DropTable,
     alter_table: AlterTable,
+    begin: void,
+    commit: void,
+    rollback: void,
 
     pub const CreateTable = struct {
         table_name: []const u8,
@@ -189,6 +192,9 @@ pub const Parser = struct {
             .kw_update => self.parseUpdate(),
             .kw_drop => self.parseDropTable(),
             .kw_alter => self.parseAlterTable(),
+            .kw_begin => self.parseBegin(),
+            .kw_commit => self.parseCommit(),
+            .kw_rollback => self.parseRollback(),
             else => ParseError.UnexpectedToken,
         };
     }
@@ -718,6 +724,28 @@ pub const Parser = struct {
         }
         return ParseError.UnexpectedToken;
     }
+
+    fn parseBegin(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_begin);
+        // Optional TRANSACTION keyword
+        if (self.peek().type == .kw_transaction) _ = self.advance();
+        _ = try self.expect(.semicolon);
+        return Statement{ .begin = {} };
+    }
+
+    fn parseCommit(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_commit);
+        if (self.peek().type == .kw_transaction) _ = self.advance();
+        _ = try self.expect(.semicolon);
+        return Statement{ .commit = {} };
+    }
+
+    fn parseRollback(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_rollback);
+        if (self.peek().type == .kw_transaction) _ = self.advance();
+        _ = try self.expect(.semicolon);
+        return Statement{ .rollback = {} };
+    }
 };
 
 test "parse CREATE TABLE" {
@@ -947,4 +975,48 @@ test "parse SELECT with multiple aggregates" {
         },
         else => return error.UnexpectedToken,
     }
+}
+
+test "parse BEGIN TRANSACTION" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("BEGIN TRANSACTION;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+    try std.testing.expectEqual(Statement{ .begin = {} }, stmt);
+}
+
+test "parse BEGIN" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("BEGIN;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+    try std.testing.expectEqual(Statement{ .begin = {} }, stmt);
+}
+
+test "parse COMMIT" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("COMMIT;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+    try std.testing.expectEqual(Statement{ .commit = {} }, stmt);
+}
+
+test "parse ROLLBACK" {
+    const allocator = std.testing.allocator;
+    var tok = Tokenizer.init("ROLLBACK;");
+    const tokens = try tok.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var p = Parser.init(allocator, tokens);
+    const stmt = try p.parse();
+    try std.testing.expectEqual(Statement{ .rollback = {} }, stmt);
 }

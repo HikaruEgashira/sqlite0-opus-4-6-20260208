@@ -20,7 +20,7 @@
 - B-Tree ベースのページ管理
 - SQLite3互換のファイルフォーマット
 - WAL (Write-Ahead Logging)
-- トランザクション (BEGIN/COMMIT/ROLLBACK)
+- ~~トランザクション (BEGIN/COMMIT/ROLLBACK)~~ ✓
 
 ## 品質保証
 - プロパティベーステスト（ランダムSQL生成 + Differential Testing）

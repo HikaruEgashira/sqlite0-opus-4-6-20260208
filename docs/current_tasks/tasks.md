@@ -1,16 +1,13 @@
 # 現在のタスク
 
-## Phase 4: SQL機能拡張
+## Phase 5: トランザクション + 品質基盤強化
 
 ### 完了
-- [x] DISTINCT
-- [x] HAVING句
-- [x] ALTER TABLE (ADD COLUMN, RENAME TO)
-- [x] CREATE INDEX (構文サポート、メタデータのみ)
-
-### 完了 (Phase 4)
-- [x] サブクエリ (IN / スカラー)
+- [x] BEGIN/COMMIT/ROLLBACK 構文パース
+- [x] インメモリスナップショットによるトランザクション実装
+- [x] Differential Testingケース追加 (23_transaction_commit, 24_transaction_rollback)
+- [x] core/executeSelect, projectColumns へのリファクタリング
 
 ## 次のタスク
-- B-Treeストレージの設計
-- トランザクション (BEGIN/COMMIT/ROLLBACK)
+- B-Treeストレージの設計・実装 (Phase 6)
+- SQLite3互換ファイルフォーマット

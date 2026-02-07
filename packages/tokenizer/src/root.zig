@@ -48,6 +48,10 @@ pub const TokenType = enum {
     kw_to,
     kw_index,
     kw_in,
+    kw_begin,
+    kw_commit,
+    kw_rollback,
+    kw_transaction,
 
     // Literals
     integer_literal,
@@ -235,6 +239,10 @@ pub const Tokenizer = struct {
             .{ "TO", TokenType.kw_to },
             .{ "INDEX", TokenType.kw_index },
             .{ "IN", TokenType.kw_in },
+            .{ "BEGIN", TokenType.kw_begin },
+            .{ "COMMIT", TokenType.kw_commit },
+            .{ "ROLLBACK", TokenType.kw_rollback },
+            .{ "TRANSACTION", TokenType.kw_transaction },
         };
 
         inline for (keywords) |entry| {
