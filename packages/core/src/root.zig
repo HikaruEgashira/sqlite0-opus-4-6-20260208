@@ -24,12 +24,6 @@ pub const Column = struct {
     is_primary_key: bool,
 };
 
-fn dupeStr(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const copy = try allocator.alloc(u8, s.len);
-    @memcpy(copy, s);
-    return copy;
-}
-
 pub const Table = struct {
     name: []const u8,
     columns: []const Column,
@@ -49,10 +43,10 @@ pub const Table = struct {
         var values = try self.allocator.alloc(Value, raw_values.len);
         for (raw_values, 0..) |raw, i| {
             if (raw.len >= 2 and raw[0] == '\'') {
-                values[i] = .{ .text = try dupeStr(self.allocator, raw[1 .. raw.len - 1]) };
+                values[i] = .{ .text = try self.allocator.dupe(u8, raw[1 .. raw.len - 1]) };
             } else {
                 const num = std.fmt.parseInt(i64, raw, 10) catch {
-                    values[i] = .{ .text = try dupeStr(self.allocator, raw) };
+                    values[i] = .{ .text = try self.allocator.dupe(u8, raw) };
                     continue;
                 };
                 values[i] = .{ .integer = num };
@@ -72,7 +66,6 @@ pub const Table = struct {
         const col_idx = self.findColumnIndex(where.column) orelse return false;
         const val = row.values[col_idx];
 
-        // Parse the where value
         const where_val = parseRawValue(where.value);
 
         return compareValues(val, where_val, where.op);
@@ -89,7 +82,6 @@ pub const Table = struct {
     }
 
     fn compareValues(a: Value, b: Value, op: CompOp) bool {
-        // Integer vs Integer
         if (a == .integer and b == .integer) {
             return switch (op) {
                 .eq => a.integer == b.integer,
@@ -100,7 +92,6 @@ pub const Table = struct {
                 .ge => a.integer >= b.integer,
             };
         }
-        // Text vs Text
         if (a == .text and b == .text) {
             const ord = std.mem.order(u8, a.text, b.text);
             return switch (op) {
@@ -191,17 +182,16 @@ pub const Database = struct {
         switch (stmt) {
             .create_table => |ct| {
                 defer self.allocator.free(ct.columns);
-                const table_name = try dupeStr(self.allocator, ct.table_name);
+                const table_name = try self.allocator.dupe(u8, ct.table_name);
                 var columns = try self.allocator.alloc(Column, ct.columns.len);
                 for (ct.columns, 0..) |col, i| {
                     columns[i] = .{
-                        .name = try dupeStr(self.allocator, col.name),
+                        .name = try self.allocator.dupe(u8, col.name),
                         .col_type = col.col_type,
                         .is_primary_key = col.is_primary_key,
                     };
                 }
-                var table = Table.init(self.allocator, table_name, columns);
-                _ = &table;
+                const table = Table.init(self.allocator, table_name, columns);
                 try self.tables.put(table_name, table);
                 return .ok;
             },
@@ -306,10 +296,10 @@ pub const Database = struct {
                             }
                             // Set new value
                             if (upd.set_value.len >= 2 and upd.set_value[0] == '\'') {
-                                row.values[set_col_idx] = .{ .text = try dupeStr(self.allocator, upd.set_value[1 .. upd.set_value.len - 1]) };
+                                row.values[set_col_idx] = .{ .text = try self.allocator.dupe(u8, upd.set_value[1 .. upd.set_value.len - 1]) };
                             } else {
                                 const num = std.fmt.parseInt(i64, upd.set_value, 10) catch {
-                                    row.values[set_col_idx] = .{ .text = try dupeStr(self.allocator, upd.set_value) };
+                                    row.values[set_col_idx] = .{ .text = try self.allocator.dupe(u8, upd.set_value) };
                                     continue;
                                 };
                                 row.values[set_col_idx] = .{ .integer = num };

@@ -69,7 +69,6 @@ pub const Statement = union(enum) {
 
 pub const ParseError = error{
     UnexpectedToken,
-    UnexpectedEof,
     OutOfMemory,
 };
 
