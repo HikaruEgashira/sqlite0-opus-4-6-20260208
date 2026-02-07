@@ -1,13 +1,14 @@
 # 現在のタスク
 
-## Phase 5: トランザクション + 品質基盤強化
+## Phase 5.5: 品質強化 + B-Tree準備
 
-### 完了
-- [x] BEGIN/COMMIT/ROLLBACK 構文パース
-- [x] インメモリスナップショットによるトランザクション実装
-- [x] Differential Testingケース追加 (23_transaction_commit, 24_transaction_rollback)
-- [x] core/executeSelect, projectColumns へのリファクタリング
+### 目的
+B-Treeストレージ導入前に、既存SQL実行パイプラインの堅牢性を高め、モジュール構造を整理する。
 
-## 次のタスク
-- B-Treeストレージの設計・実装 (Phase 6)
-- SQLite3互換ファイルフォーマット
+### タスク
+- [ ] エッジケーステストの拡充（エラーケース、境界値、複合クエリ）
+- [ ] 式評価（Expression evaluation）の実装（算術式、文字列連結）
+- [ ] コアエンジンのストレージ抽象化（B-Tree導入時の変更範囲限定）
+
+## 次のフェーズ
+- Phase 6: B-Treeストレージ + SQLite3互換ファイルフォーマット
