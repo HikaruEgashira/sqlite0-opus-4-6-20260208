@@ -1,0 +1,9 @@
+#!/bin/bash
+
+while true; do
+    COMMIT=$(git rev-parse --short=6 HEAD)
+    LOGFILE="agent_logs/agent_${COMMIT}.log"
+
+    claude --dangerously-skip-permissions \
+           -p "$(cat AGENT_PROMPT.md)" &> "$LOGFILE"
+done
