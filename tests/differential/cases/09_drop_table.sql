@@ -1,0 +1,7 @@
+CREATE TABLE temp (id INTEGER PRIMARY KEY, val TEXT);
+INSERT INTO temp VALUES (1, 'hello');
+SELECT * FROM temp;
+DROP TABLE temp;
+CREATE TABLE temp (id INTEGER PRIMARY KEY, val TEXT);
+INSERT INTO temp VALUES (1, 'world');
+SELECT * FROM temp;
