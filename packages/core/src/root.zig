@@ -180,6 +180,14 @@ fn compareValuesOrder(a: Value, b: Value) std.math.Order {
     return .eq;
 }
 
+fn rowsEqual(a: Row, b: Row) bool {
+    if (a.values.len != b.values.len) return false;
+    for (a.values, b.values) |va, vb| {
+        if (compareValuesOrder(va, vb) != .eq) return false;
+    }
+    return true;
+}
+
 pub const Database = struct {
     tables: std.StringHashMap(Table),
     allocator: std.mem.Allocator,
@@ -677,6 +685,25 @@ pub const Database = struct {
                         std.mem.sort(Row, matching_rows.items, SortCtx{ .sort_col_idx = sort_col_idx, .is_desc = desc }, SortCtx.lessThan);
                     }
 
+                    // Apply DISTINCT (remove duplicate rows)
+                    if (sel.distinct) {
+                        var write_idx: usize = 0;
+                        for (matching_rows.items, 0..) |row, ri| {
+                            var is_dup = false;
+                            for (matching_rows.items[0..write_idx]) |prev| {
+                                if (rowsEqual(row, prev)) {
+                                    is_dup = true;
+                                    break;
+                                }
+                            }
+                            if (!is_dup) {
+                                matching_rows.items[write_idx] = matching_rows.items[ri];
+                                write_idx += 1;
+                            }
+                        }
+                        matching_rows.shrinkRetainingCapacity(write_idx);
+                    }
+
                     // Apply LIMIT/OFFSET
                     const total = matching_rows.items.len;
                     var start: usize = 0;
@@ -726,6 +753,28 @@ pub const Database = struct {
                         }
                         proj_values[ri] = values;
                         proj_rows[ri] = .{ .values = values };
+                    }
+                    // Apply DISTINCT on projected columns
+                    if (sel.distinct and row_count > 0) {
+                        var write_idx: usize = 0;
+                        for (0..row_count) |ri| {
+                            var is_dup = false;
+                            for (0..write_idx) |pi| {
+                                if (rowsEqual(proj_rows[pi], proj_rows[ri])) {
+                                    is_dup = true;
+                                    break;
+                                }
+                            }
+                            if (!is_dup) {
+                                proj_rows[write_idx] = proj_rows[ri];
+                                proj_values[write_idx] = proj_values[ri];
+                                write_idx += 1;
+                            } else {
+                                self.allocator.free(proj_values[ri]);
+                            }
+                        }
+                        proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
+                        proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
                     }
                     self.projected_rows = proj_rows;
                     self.projected_values = proj_values;

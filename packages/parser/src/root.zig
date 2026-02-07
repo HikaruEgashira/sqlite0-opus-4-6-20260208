@@ -102,6 +102,7 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         columns: []const []const u8, // empty = * (plain column names for backward compat)
         select_exprs: []const SelectExpr, // full expression list (includes aggregates)
+        distinct: bool,
         join: ?JoinClause,
         where: ?WhereClause,
         group_by: ?[]const u8, // column name
@@ -280,6 +281,10 @@ pub const Parser = struct {
     fn parseSelect(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_select);
 
+        // Parse optional DISTINCT
+        const distinct = self.peek().type == .kw_distinct;
+        if (distinct) _ = self.advance();
+
         var columns: std.ArrayList([]const u8) = .{};
         var select_exprs: std.ArrayList(SelectExpr) = .{};
 
@@ -360,6 +365,7 @@ pub const Parser = struct {
                 .table_name = table_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .distinct = distinct,
                 .join = join,
                 .where = where,
                 .group_by = group_by,

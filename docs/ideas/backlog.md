@@ -8,11 +8,11 @@
 - ~~ORDER BY / GROUP BY~~ ✓
 - ~~集約関数 (COUNT, SUM, AVG, MIN, MAX)~~ ✓
 - ~~LIMIT / OFFSET~~ ✓
-- JOIN (INNER JOIN, LEFT JOIN)
-- WHERE句の拡張（AND/OR/括弧）
+- ~~JOIN (INNER JOIN, LEFT JOIN)~~ ✓
+- ~~WHERE句の拡張（AND/OR）~~ ✓
 - サブクエリ
 - HAVING句
-- DISTINCT
+- ~~DISTINCT~~ ✓
 - NULL値の適切なハンドリング
 - ALTER TABLE
 

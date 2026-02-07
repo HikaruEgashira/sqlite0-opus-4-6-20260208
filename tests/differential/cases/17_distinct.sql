@@ -1,0 +1,11 @@
+CREATE TABLE colors (id INTEGER PRIMARY KEY, name TEXT, category TEXT);
+INSERT INTO colors VALUES (1, 'red', 'warm');
+INSERT INTO colors VALUES (2, 'blue', 'cool');
+INSERT INTO colors VALUES (3, 'orange', 'warm');
+INSERT INTO colors VALUES (4, 'green', 'cool');
+INSERT INTO colors VALUES (5, 'yellow', 'warm');
+INSERT INTO colors VALUES (6, 'red', 'warm');
+SELECT DISTINCT category FROM colors;
+SELECT DISTINCT name FROM colors ORDER BY name;
+SELECT DISTINCT category FROM colors ORDER BY category;
+SELECT DISTINCT name, category FROM colors ORDER BY name;
