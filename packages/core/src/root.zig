@@ -6,6 +6,8 @@ pub const Tokenizer = tokenizer.Tokenizer;
 pub const Parser = parser.Parser;
 pub const Statement = parser.Statement;
 pub const WhereClause = parser.WhereClause;
+pub const WhereCondition = parser.WhereCondition;
+pub const LogicOp = parser.LogicOp;
 pub const CompOp = parser.CompOp;
 pub const OrderByClause = parser.OrderByClause;
 pub const SortOrder = parser.SortOrder;
@@ -74,14 +76,25 @@ pub const Table = struct {
         return null;
     }
 
-    pub fn matchesWhere(self: *const Table, row: Row, where: WhereClause) bool {
-        const col_idx = self.findColumnIndex(where.column) orelse return false;
+    fn matchesSingleCondition(self: *const Table, row: Row, column: []const u8, op: CompOp, value: []const u8) bool {
+        const col_idx = self.findColumnIndex(column) orelse return false;
         const val = row.values[col_idx];
+        const where_val = parseRawValue(value);
+        return compareValues(val, where_val, op);
+    }
 
-        // Parse the where value
-        const where_val = parseRawValue(where.value);
+    pub fn matchesWhere(self: *const Table, row: Row, where: WhereClause) bool {
+        var result = self.matchesSingleCondition(row, where.column, where.op, where.value);
 
-        return compareValues(val, where_val, where.op);
+        for (where.extra, 0..) |cond, i| {
+            const cond_result = self.matchesSingleCondition(row, cond.column, cond.op, cond.value);
+            switch (where.connectors[i]) {
+                .and_op => result = result and cond_result,
+                .or_op => result = result or cond_result,
+            }
+        }
+
+        return result;
     }
 
     fn parseRawValue(raw: []const u8) Value {

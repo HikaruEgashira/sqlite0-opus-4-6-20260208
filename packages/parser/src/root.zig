@@ -30,10 +30,24 @@ pub const CompOp = enum {
     ge,
 };
 
+pub const LogicOp = enum {
+    and_op,
+    or_op,
+};
+
+pub const WhereCondition = struct {
+    column: []const u8,
+    op: CompOp,
+    value: []const u8,
+};
+
 pub const WhereClause = struct {
     column: []const u8,
     op: CompOp,
     value: []const u8,
+    // Additional conditions connected by AND/OR
+    extra: []const WhereCondition,
+    connectors: []const LogicOp,
 };
 
 pub const AggFunc = enum {
@@ -407,28 +421,60 @@ pub const Parser = struct {
         };
     }
 
-    fn parseWhereClause(self: *Parser) ParseError!WhereClause {
-        _ = try self.expect(.kw_where);
-        const col_tok = try self.expect(.identifier);
+    fn parseCompOp(self: *Parser) ParseError!CompOp {
         const op_tok = self.advance();
-        const op: CompOp = switch (op_tok.type) {
+        return switch (op_tok.type) {
             .equals => .eq,
             .not_equals => .ne,
             .less_than => .lt,
             .less_equal => .le,
             .greater_than => .gt,
             .greater_equal => .ge,
-            else => return ParseError.UnexpectedToken,
+            else => ParseError.UnexpectedToken,
         };
+    }
+
+    fn parseWhereClause(self: *Parser) ParseError!WhereClause {
+        _ = try self.expect(.kw_where);
+
+        // Parse first condition
+        const col_tok = try self.expect(.identifier);
+        const op = try self.parseCompOp();
         const val_tok = self.advance();
         switch (val_tok.type) {
             .integer_literal, .string_literal, .identifier => {},
             else => return ParseError.UnexpectedToken,
         }
+
+        // Parse additional AND/OR conditions
+        var extra: std.ArrayList(WhereCondition) = .{};
+        var connectors: std.ArrayList(LogicOp) = .{};
+
+        while (self.peek().type == .kw_and or self.peek().type == .kw_or) {
+            const logic_op: LogicOp = if (self.peek().type == .kw_and) .and_op else .or_op;
+            _ = self.advance();
+            connectors.append(self.allocator, logic_op) catch return ParseError.OutOfMemory;
+
+            const next_col = try self.expect(.identifier);
+            const next_op = try self.parseCompOp();
+            const next_val = self.advance();
+            switch (next_val.type) {
+                .integer_literal, .string_literal, .identifier => {},
+                else => return ParseError.UnexpectedToken,
+            }
+            extra.append(self.allocator, .{
+                .column = next_col.lexeme,
+                .op = next_op,
+                .value = next_val.lexeme,
+            }) catch return ParseError.OutOfMemory;
+        }
+
         return .{
             .column = col_tok.lexeme,
             .op = op,
             .value = val_tok.lexeme,
+            .extra = extra.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            .connectors = connectors.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
         };
     }
 
