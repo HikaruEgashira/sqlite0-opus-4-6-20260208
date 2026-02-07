@@ -81,6 +81,9 @@ pub const Table = struct {
 pub const Database = struct {
     tables: std.StringHashMap(Table),
     allocator: std.mem.Allocator,
+    // Temporary storage for projected rows (freed on next execute)
+    projected_rows: ?[]Row = null,
+    projected_values: ?[][]Value = null,
 
     pub fn init(allocator: std.mem.Allocator) Database {
         return .{
@@ -90,6 +93,7 @@ pub const Database = struct {
     }
 
     pub fn deinit(self: *Database) void {
+        self.freeProjected();
         var it = self.tables.valueIterator();
         while (it.next()) |table| {
             table.deinit();
@@ -97,7 +101,22 @@ pub const Database = struct {
         self.tables.deinit();
     }
 
+    fn freeProjected(self: *Database) void {
+        if (self.projected_values) |pv| {
+            for (pv) |v| {
+                self.allocator.free(v);
+            }
+            self.allocator.free(pv);
+            self.projected_values = null;
+        }
+        if (self.projected_rows) |pr| {
+            self.allocator.free(pr);
+            self.projected_rows = null;
+        }
+    }
+
     pub fn execute(self: *Database, sql: []const u8) !ExecuteResult {
+        self.freeProjected();
         var tok = Tokenizer.init(sql);
         const tokens = try tok.tokenize(self.allocator);
         defer self.allocator.free(tokens);
@@ -133,7 +152,41 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 if (self.tables.get(sel.table_name)) |table| {
-                    return .{ .rows = table.rows.items };
+                    if (sel.columns.len == 0) {
+                        // SELECT *
+                        return .{ .rows = table.rows.items };
+                    }
+                    // Column projection: resolve column indices
+                    var col_indices = try self.allocator.alloc(usize, sel.columns.len);
+                    defer self.allocator.free(col_indices);
+                    for (sel.columns, 0..) |sel_col, i| {
+                        var found = false;
+                        for (table.columns, 0..) |tbl_col, j| {
+                            if (std.mem.eql(u8, sel_col, tbl_col.name)) {
+                                col_indices[i] = j;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            return .{ .err = "column not found" };
+                        }
+                    }
+                    // Build projected rows
+                    const row_count = table.rows.items.len;
+                    var proj_values = try self.allocator.alloc([]Value, row_count);
+                    var proj_rows = try self.allocator.alloc(Row, row_count);
+                    for (table.rows.items, 0..) |row, ri| {
+                        var values = try self.allocator.alloc(Value, sel.columns.len);
+                        for (col_indices, 0..) |src_idx, dst_idx| {
+                            values[dst_idx] = row.values[src_idx];
+                        }
+                        proj_values[ri] = values;
+                        proj_rows[ri] = .{ .values = values };
+                    }
+                    self.projected_rows = proj_rows;
+                    self.projected_values = proj_values;
+                    return .{ .rows = proj_rows };
                 }
                 return .{ .err = "table not found" };
             },
