@@ -72,6 +72,12 @@ pub const TokenType = enum {
     greater_equal,
     dot,
 
+    // Arithmetic operators
+    plus,
+    minus,
+    divide,
+    concat,  // ||
+
     // Special
     eof,
     invalid,
@@ -115,6 +121,11 @@ pub const Tokenizer = struct {
             self.pos += 2;
             return .{ .type = .greater_equal, .lexeme = lexeme };
         }
+        if (c == '|' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '|') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .concat, .lexeme = lexeme };
+        }
 
         // Single-character tokens
         const single_token: ?TokenType = switch (c) {
@@ -127,6 +138,9 @@ pub const Tokenizer = struct {
             '<' => .less_than,
             '>' => .greater_than,
             '.' => .dot,
+            '+' => .plus,
+            '-' => .minus,
+            '/' => .divide,
             else => null,
         };
 
