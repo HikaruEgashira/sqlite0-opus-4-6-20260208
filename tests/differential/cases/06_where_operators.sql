@@ -1,0 +1,10 @@
+CREATE TABLE scores (id INTEGER PRIMARY KEY, value INTEGER);
+INSERT INTO scores VALUES (1, 10);
+INSERT INTO scores VALUES (2, 20);
+INSERT INTO scores VALUES (3, 30);
+INSERT INTO scores VALUES (4, 40);
+SELECT * FROM scores WHERE value > 20;
+SELECT * FROM scores WHERE value >= 30;
+SELECT * FROM scores WHERE value < 20;
+SELECT * FROM scores WHERE value <= 10;
+SELECT * FROM scores WHERE value != 20;

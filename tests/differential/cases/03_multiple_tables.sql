@@ -1,0 +1,10 @@
+CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT);
+CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, dept_id INTEGER);
+INSERT INTO departments VALUES (1, 'Engineering');
+INSERT INTO departments VALUES (2, 'Sales');
+INSERT INTO employees VALUES (1, 'Alice', 1);
+INSERT INTO employees VALUES (2, 'Bob', 2);
+INSERT INTO employees VALUES (3, 'Charlie', 1);
+SELECT * FROM departments;
+SELECT * FROM employees;
+SELECT name FROM employees;
