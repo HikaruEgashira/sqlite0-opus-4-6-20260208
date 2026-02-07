@@ -1,0 +1,11 @@
+.{
+    .name = .sqlite0,
+    .version = "0.1.0",
+    .fingerprint = 0xf7d586abd3126211,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "app",
+        "packages",
+    },
+}
