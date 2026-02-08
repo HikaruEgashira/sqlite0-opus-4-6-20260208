@@ -89,6 +89,14 @@ pub const Table = struct {
         if (op == .is_not_null) return val != .null_val;
         // in_subquery should be resolved before reaching here
         if (op == .in_subquery) return false;
+        // Handle LIKE pattern matching
+        if (op == .like) {
+            if (val != .text) return false;
+            const pattern_val = parseRawValue(value);
+            if (pattern_val != .text) return false;
+            // Call likeMatch (defined later in file)
+            return likeMatch(val.text, pattern_val.text) catch false;
+        }
         const where_val = parseRawValue(value);
         return compareValues(val, where_val, op);
     }
@@ -120,8 +128,8 @@ pub const Table = struct {
     fn compareValues(a: Value, b: Value, op: CompOp) bool {
         // NULL comparisons: any comparison involving NULL returns false (SQL standard)
         if (a == .null_val or b == .null_val) return false;
-        // IS NULL / IS NOT NULL / in_subquery handled elsewhere
-        if (op == .is_null or op == .is_not_null or op == .in_subquery) return false;
+        // IS NULL / IS NOT NULL / in_subquery / like handled elsewhere
+        if (op == .is_null or op == .is_not_null or op == .in_subquery or op == .like) return false;
 
         // Integer vs Integer
         if (a == .integer and b == .integer) {
@@ -132,7 +140,7 @@ pub const Table = struct {
                 .le => a.integer <= b.integer,
                 .gt => a.integer > b.integer,
                 .ge => a.integer >= b.integer,
-                .is_null, .is_not_null, .in_subquery => unreachable,
+                .is_null, .is_not_null, .in_subquery, .like => unreachable,
             };
         }
         // Text vs Text
@@ -145,7 +153,7 @@ pub const Table = struct {
                 .le => ord == .lt or ord == .eq,
                 .gt => ord == .gt,
                 .ge => ord == .gt or ord == .eq,
-                .is_null, .is_not_null, .in_subquery => unreachable,
+                .is_null, .is_not_null, .in_subquery, .like => unreachable,
             };
         }
         // Mismatched types: try numeric coercion (e.g., text "150.0" vs integer 150)
@@ -162,7 +170,7 @@ pub const Table = struct {
                 .le => f_a <= f_b,
                 .gt => f_a > f_b,
                 .ge => f_a >= f_b,
-                .is_null, .is_not_null, .in_subquery => false,
+                .is_null, .is_not_null, .in_subquery, .like => false,
             };
         }
         if (a == .integer and b == .text) {
@@ -178,7 +186,7 @@ pub const Table = struct {
                 .le => f_a <= f_b,
                 .gt => f_a > f_b,
                 .ge => f_a >= f_b,
-                .is_null, .is_not_null, .in_subquery => false,
+                .is_null, .is_not_null, .in_subquery, .like => false,
             };
         }
         return switch (op) {
@@ -227,6 +235,45 @@ fn compareValuesOrder(a: Value, b: Value) std.math.Order {
     if (a == .null_val) return .lt;
     if (b == .null_val) return .gt;
     return .eq;
+}
+
+/// LIKE pattern matching (SQL compatible)
+/// % matches any sequence of characters (0 or more)
+/// _ matches any single character
+fn likeMatch(text: []const u8, pattern: []const u8) !bool {
+    var text_idx: usize = 0;
+    var pattern_idx: usize = 0;
+
+    while (pattern_idx < pattern.len) {
+        if (pattern[pattern_idx] == '%') {
+            // Match remaining pattern starting from each position in text
+            pattern_idx += 1;
+            if (pattern_idx >= pattern.len) return true; // % at end matches anything
+
+            while (text_idx <= text.len) {
+                if (try likeMatch(text[text_idx..], pattern[pattern_idx..])) {
+                    return true;
+                }
+                text_idx += 1;
+            }
+            return false;
+        } else if (pattern[pattern_idx] == '_') {
+            // Match any single character
+            if (text_idx >= text.len) return false;
+            text_idx += 1;
+            pattern_idx += 1;
+        } else {
+            // Match literal character (case-insensitive)
+            if (text_idx >= text.len) return false;
+            const text_char = std.ascii.toLower(text[text_idx]);
+            const pattern_char = std.ascii.toLower(pattern[pattern_idx]);
+            if (text_char != pattern_char) return false;
+            text_idx += 1;
+            pattern_idx += 1;
+        }
+    }
+
+    return text_idx == text.len;
 }
 
 fn rowsEqual(a: Row, b: Row) bool {
@@ -432,6 +479,19 @@ pub const Database = struct {
                     return .{ .integer = if (cmp_result) 1 else 0 };
                 }
 
+                // LIKE operator
+                if (bin.op == .like) {
+                    if (left_val == .null_val or right_val == .null_val) return .null_val;
+
+                    const left_text = self.valueToText(left_val);
+                    defer self.allocator.free(left_text);
+                    const right_text = self.valueToText(right_val);
+                    defer self.allocator.free(right_text);
+
+                    const matches = try likeMatch(left_text, right_text);
+                    return .{ .integer = if (matches) 1 else 0 };
+                }
+
                 // For other operators, NULL propagation applies
                 if (left_val == .null_val or right_val == .null_val) return .null_val;
 
@@ -459,11 +519,36 @@ pub const Database = struct {
                             else => unreachable,
                         } };
                     },
-                    .eq, .ne, .lt, .le, .gt, .ge => unreachable,
+                    .eq, .ne, .lt, .le, .gt, .ge, .like => unreachable,
                 }
             },
             .aggregate => {
                 // Aggregate expressions are evaluated differently (in computeAgg)
+                return .null_val;
+            },
+            .case_when => |cw| {
+                // Evaluate CASE WHEN: find first condition that is true
+                for (cw.conditions, cw.results) |cond_expr, result_expr| {
+                    const cond_val = try self.evalExpr(cond_expr, tbl, row);
+                    defer if (cond_val == .text) self.allocator.free(cond_val.text);
+
+                    // Non-zero and non-NULL is true
+                    const is_true = switch (cond_val) {
+                        .integer => |n| n != 0,
+                        else => false,
+                    };
+
+                    if (is_true) {
+                        return try self.evalExpr(result_expr, tbl, row);
+                    }
+                }
+
+                // No condition matched, evaluate ELSE if present
+                if (cw.else_result) |else_expr| {
+                    return try self.evalExpr(else_expr, tbl, row);
+                }
+
+                // No ELSE and no match -> NULL
                 return .null_val;
             },
         }

@@ -31,6 +31,7 @@ pub const CompOp = enum {
     is_null,
     is_not_null,
     in_subquery, // WHERE col IN (SELECT ...)
+    like, // LIKE pattern matching
 };
 
 pub const LogicOp = enum {
@@ -75,6 +76,7 @@ pub const BinOp = enum {
     le, // <=
     gt, // >
     ge, // >=
+    like, // LIKE pattern matching
 };
 
 pub const Expr = union(enum) {
@@ -91,6 +93,11 @@ pub const Expr = union(enum) {
     aggregate: struct {
         func: AggFunc,
         arg: *const Expr, // inner expression (column_ref or star)
+    },
+    case_when: struct {
+        conditions: []const *const Expr,  // WHEN conditions
+        results: []const *const Expr,     // THEN results
+        else_result: ?*const Expr,        // ELSE result (optional)
     },
 };
 
@@ -570,23 +577,27 @@ pub const Parser = struct {
         return self.parseComparison();
     }
 
-    /// Parse comparison operators: =, !=, <, <=, >, >=
+    /// Parse comparison operators: =, !=, <, <=, >, >=, LIKE
     fn parseComparison(self: *Parser) ParseError!*const Expr {
         var left = try self.parseAddSub();
 
         while (true) {
-            const op: BinOp = switch (self.peek().type) {
+            const op_opt: ?BinOp = switch (self.peek().type) {
                 .equals => .eq,
                 .not_equals => .ne,
                 .less_than => .lt,
                 .less_equal => .le,
                 .greater_than => .gt,
                 .greater_equal => .ge,
-                else => break,
+                .kw_like => .like,
+                else => null,
             };
+
+            if (op_opt == null) break;
+
             _ = self.advance();
             const right = try self.parseAddSub();
-            left = try self.allocExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+            left = try self.allocExpr(.{ .binary_op = .{ .op = op_opt.?, .left = left, .right = right } });
         }
 
         return left;
@@ -632,6 +643,39 @@ pub const Parser = struct {
     /// Parse primary expressions: literals, column refs, aggregates, parenthesized exprs
     fn parsePrimary(self: *Parser) ParseError!*const Expr {
         const tok = self.peek();
+
+        // CASE WHEN expression
+        if (tok.type == .kw_case) {
+            _ = self.advance();
+            var conditions: std.ArrayList(*const Expr) = .{};
+            defer conditions.deinit(self.allocator);
+            var results: std.ArrayList(*const Expr) = .{};
+            defer results.deinit(self.allocator);
+
+            // Parse WHEN ... THEN ... pairs
+            while (self.peek().type == .kw_when) {
+                _ = self.advance();
+                const cond = try self.parseExpr();
+                try conditions.append(self.allocator, cond);
+                _ = try self.expect(.kw_then);
+                const result = try self.parseExpr();
+                try results.append(self.allocator, result);
+            }
+
+            // Parse optional ELSE
+            const else_result = if (self.peek().type == .kw_else) blk: {
+                _ = self.advance();
+                break :blk try self.parseExpr();
+            } else null;
+
+            _ = try self.expect(.kw_end);
+
+            return self.allocExpr(.{ .case_when = .{
+                .conditions = try conditions.toOwnedSlice(self.allocator),
+                .results = try results.toOwnedSlice(self.allocator),
+                .else_result = else_result,
+            } });
+        }
 
         // Aggregate function
         if (isAggFunc(tok.type)) |func| {
@@ -725,6 +769,19 @@ pub const Parser = struct {
             .aggregate => |agg| {
                 freeExpr(allocator, agg.arg);
             },
+            .case_when => |cw| {
+                for (cw.conditions) |cond| {
+                    freeExpr(allocator, cond);
+                }
+                allocator.free(cw.conditions);
+                for (cw.results) |res| {
+                    freeExpr(allocator, res);
+                }
+                allocator.free(cw.results);
+                if (cw.else_result) |else_res| {
+                    freeExpr(allocator, else_res);
+                }
+            },
             else => {},
         }
         allocator.destroy(@constCast(expr));
@@ -803,6 +860,15 @@ pub const Parser = struct {
             _ = try self.expect(.lparen);
             const sql = try self.extractSubquerySQL();
             return .{ .column = col_tok.lexeme, .op = .in_subquery, .value = "", .subquery_sql = sql };
+        }
+        // Check for LIKE
+        if (self.peek().type == .kw_like) {
+            _ = self.advance();
+            const pattern_tok = self.advance();
+            if (pattern_tok.type != .string_literal and pattern_tok.type != .identifier) {
+                return ParseError.UnexpectedToken;
+            }
+            return .{ .column = col_tok.lexeme, .op = .like, .value = pattern_tok.lexeme };
         }
         const op = try self.parseCompOp();
         // Check for scalar subquery: op (SELECT ...)
