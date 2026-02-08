@@ -4288,10 +4288,38 @@ pub const Database = struct {
             }
         }
 
-        // Store results
+        // Store results — track values and texts for proper cleanup
         self.projected_rows = try self.allocator.dupe(Row, final_rows);
-        self.projected_values = null;
-        self.projected_texts = null;
+        var proj_vals = try self.allocator.alloc([]Value, final_rows.len);
+        var alloc_texts_list: std.ArrayList([]const u8) = .{};
+        for (final_rows, 0..) |row, i| {
+            proj_vals[i] = row.values;
+            for (row.values) |val| {
+                if (val == .text) {
+                    alloc_texts_list.append(self.allocator, val.text) catch {};
+                }
+            }
+        }
+        self.projected_values = proj_vals;
+        // Free rows that were trimmed by LIMIT/OFFSET
+        for (all_rows.items) |row| {
+            var in_final = false;
+            for (final_rows) |fr| {
+                if (fr.values.ptr == row.values.ptr) {
+                    in_final = true;
+                    break;
+                }
+            }
+            if (!in_final) {
+                self.freeRow(row);
+            }
+        }
+        if (alloc_texts_list.items.len > 0) {
+            self.projected_texts = alloc_texts_list.toOwnedSlice(self.allocator) catch null;
+        } else {
+            alloc_texts_list.deinit(self.allocator);
+            self.projected_texts = null;
+        }
 
         return .{ .rows = self.projected_rows.? };
     }
