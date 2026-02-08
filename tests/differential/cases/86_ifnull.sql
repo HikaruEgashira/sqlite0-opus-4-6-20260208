@@ -1,0 +1,9 @@
+-- IFNULL function tests
+SELECT IFNULL(NULL, 'default');
+SELECT IFNULL('hello', 'default');
+SELECT IFNULL(NULL, NULL);
+SELECT IFNULL(42, 99);
+CREATE TABLE t1 (a TEXT, b TEXT);
+INSERT INTO t1 VALUES ('x', 'y');
+INSERT INTO t1 VALUES (NULL, 'backup');
+SELECT IFNULL(a, b) FROM t1;

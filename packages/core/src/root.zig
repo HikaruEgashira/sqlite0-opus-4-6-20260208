@@ -817,6 +817,43 @@ pub const Database = struct {
                 const trimmed = std.mem.trimRight(u8, val.text, " ");
                 return .{ .text = try dupeStr(self.allocator, trimmed) };
             },
+            .round => {
+                // ROUND always returns real in SQLite
+                if (args.len == 0 or args.len > 2) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const n = self.valueToI64(val) orelse return .null_val;
+                const float_val: f64 = @floatFromInt(n);
+                var buf: [64]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{float_val}) catch return .null_val;
+                var has_dot = false;
+                for (slice) |ch| {
+                    if (ch == '.') { has_dot = true; break; }
+                }
+                if (has_dot) {
+                    return .{ .text = try dupeStr(self.allocator, slice) };
+                } else {
+                    var dot_buf: [66]u8 = undefined;
+                    @memcpy(dot_buf[0..slice.len], slice);
+                    dot_buf[slice.len] = '.';
+                    dot_buf[slice.len + 1] = '0';
+                    return .{ .text = try dupeStr(self.allocator, dot_buf[0 .. slice.len + 2]) };
+                }
+            },
+            .ifnull => {
+                if (args.len != 2) return .null_val;
+                const v1 = try self.evalExpr(args[0], tbl, row);
+                if (v1 != .null_val) return v1;
+                return try self.evalExpr(args[1], tbl, row);
+            },
+            .random => {
+                // RANDOM() returns a random integer (simplified: use timestamp-based)
+                const seed: u64 = @bitCast(std.time.milliTimestamp());
+                var rng = std.Random.DefaultPrng.init(seed);
+                const val = rng.random().int(i64);
+                return .{ .integer = val };
+            },
         }
     }
 
@@ -1080,6 +1117,30 @@ pub const Database = struct {
                 }
                 if (first) return .null_val; // all NULL
                 return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+            },
+            .total => {
+                var sum: f64 = 0;
+                for (rows) |row| {
+                    if (row.values[col_idx] == .integer) {
+                        sum += @floatFromInt(row.values[col_idx].integer);
+                    }
+                }
+                // TOTAL always returns real, even for empty set (0.0)
+                var buf: [64]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{sum}) catch return error.OutOfMemory;
+                var has_dot = false;
+                for (slice) |ch| {
+                    if (ch == '.') { has_dot = true; break; }
+                }
+                if (has_dot) {
+                    return .{ .text = try dupeStr(self.allocator, slice) };
+                } else {
+                    var dot_buf: [66]u8 = undefined;
+                    @memcpy(dot_buf[0..slice.len], slice);
+                    dot_buf[slice.len] = '.';
+                    dot_buf[slice.len + 1] = '0';
+                    return .{ .text = try dupeStr(self.allocator, dot_buf[0 .. slice.len + 2]) };
+                }
             },
             else => return .null_val,
         }

@@ -70,6 +70,7 @@ pub const AggFunc = enum {
     min,
     max,
     group_concat,
+    total,
 };
 
 pub const BinOp = enum {
@@ -119,6 +120,9 @@ pub const ScalarFunc = enum {
     printf_fn,
     ltrim,
     rtrim,
+    round,
+    ifnull,
+    random,
 };
 
 pub const Expr = union(enum) {
@@ -372,6 +376,15 @@ pub const Parser = struct {
         return tok;
     }
 
+    /// Accept identifier or keyword as an alias name (keywords can be used as aliases)
+    fn expectAlias(self: *Parser) ParseError!Token {
+        const tok = self.advance();
+        if (tok.type == .identifier) return tok;
+        // Allow keywords as aliases (e.g., AS total, AS value, etc.)
+        if (tok.lexeme.len > 0 and tok.type != .eof and tok.type != .semicolon) return tok;
+        return ParseError.UnexpectedToken;
+    }
+
     fn parseCreate(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_create);
         if (self.peek().type == .kw_index) {
@@ -609,6 +622,7 @@ pub const Parser = struct {
             .kw_avg => .avg,
             .kw_min => .min,
             .kw_max => .max,
+            .kw_total => .total,
             else => null,
         };
     }
@@ -637,7 +651,7 @@ pub const Parser = struct {
                 var alias: ?[]const u8 = null;
                 if (self.peek().type == .kw_as) {
                     _ = self.advance();
-                    const alias_tok = try self.expect(.identifier);
+                    const alias_tok = try self.expectAlias();
                     alias = alias_tok.lexeme;
                 }
                 aliases.append(self.allocator, alias) catch return ParseError.OutOfMemory;
@@ -671,7 +685,7 @@ pub const Parser = struct {
             // Parse optional alias: AS alias or bare alias
             if (self.peek().type == .kw_as) {
                 _ = self.advance();
-                const alias_tok = try self.expect(.identifier);
+                const alias_tok = try self.expectAlias();
                 table_alias = alias_tok.lexeme;
             } else if (self.peek().type == .identifier) {
                 // Bare alias (not a keyword)
@@ -727,7 +741,7 @@ pub const Parser = struct {
             var comma_alias: ?[]const u8 = null;
             if (self.peek().type == .kw_as) {
                 _ = self.advance();
-                const alias_tok = try self.expect(.identifier);
+                const alias_tok = try self.expectAlias();
                 comma_alias = alias_tok.lexeme;
             } else if (self.peek().type == .identifier) {
                 comma_alias = self.advance().lexeme;
@@ -859,7 +873,7 @@ pub const Parser = struct {
         var join_alias: ?[]const u8 = null;
         if (self.peek().type == .kw_as) {
             _ = self.advance();
-            const alias_tok = try self.expect(.identifier);
+            const alias_tok = try self.expectAlias();
             join_alias = alias_tok.lexeme;
         } else if (self.peek().type == .identifier and self.peek().type != .kw_on) {
             join_alias = self.advance().lexeme;
@@ -1496,6 +1510,9 @@ pub const Parser = struct {
             .{ "PRINTF", ScalarFunc.printf_fn },
             .{ "LTRIM", ScalarFunc.ltrim },
             .{ "RTRIM", ScalarFunc.rtrim },
+            .{ "ROUND", ScalarFunc.round },
+            .{ "IFNULL", ScalarFunc.ifnull },
+            .{ "RANDOM", ScalarFunc.random },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {

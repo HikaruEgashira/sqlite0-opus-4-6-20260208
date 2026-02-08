@@ -1,0 +1,7 @@
+-- TOTAL aggregate function tests
+CREATE TABLE t1 (val INTEGER);
+INSERT INTO t1 VALUES (10), (20), (30);
+SELECT TOTAL(val) FROM t1;
+CREATE TABLE empty (val INTEGER);
+SELECT TOTAL(val) FROM empty;
+SELECT TOTAL(val) FROM t1 WHERE val > 100;

@@ -1,0 +1,7 @@
+-- ROUND function tests
+SELECT ROUND(2);
+SELECT ROUND(-3);
+SELECT ROUND(NULL);
+CREATE TABLE nums (val INTEGER);
+INSERT INTO nums VALUES (10), (25), (37);
+SELECT ROUND(val) FROM nums;
