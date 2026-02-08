@@ -63,6 +63,17 @@
 - [x] ネスト関数呼び出しテスト
 - Differential Test: **91/91 passing**
 
+### Phase 6d-9: SQL機能充実（完了）
+- [x] LEFT/RIGHT OUTER JOIN構文
+- [x] ビット演算子（&, |, ~, <<, >>）
+- [x] AUTOINCREMENT（INTEGER PRIMARY KEY）
+- [x] CHECK制約（CREATE TABLE + INSERT検証）
+- [x] 浮動小数点リテラル（3.14, -2.5）
+- [x] REAL列型サポート
+- [x] 浮動小数点演算（+, -, *, /）
+- [x] 負数パースのメモリリーク修正
+- Differential Test: **102/102 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）

@@ -55,13 +55,15 @@
 - ~~SUM(DISTINCT) / AVG(DISTINCT) / GROUP_CONCAT(DISTINCT)~~ ✓
 - ~~RIGHT JOIN~~ ✓
 - ~~DEFAULT値（CREATE TABLE + INSERT列リスト）~~ ✓
+- ~~ビット演算子 (&, |, ~, <<, >>)~~ ✓
+- ~~CHECK制約~~ ✓
+- ~~AUTOINCREMENT~~ ✓
+- ~~浮動小数点リテラル・REAL列型~~ ✓
+- ~~LEFT/RIGHT OUTER JOIN構文~~ ✓
 - Date/Time関数 (datetime, date, strftime)
-- ビット演算子 (&, |, ~, <<, >>)
 - FULL OUTER JOIN
 - Window関数 (ROW_NUMBER, RANK, etc.)
-- CHECK制約
 - 外部キー (FOREIGN KEY)
-- AUTOINCREMENT
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
