@@ -70,8 +70,11 @@
 - PARTITION BY (Window関数)
 - SUM/AVG OVER (Window集約)
 - GENERATED COLUMNS
-- UPSERT (ON CONFLICT)
-- Common Table Expressions (WITH/CTE)
+- ~~UPSERT (ON CONFLICT)~~ ✓
+- ~~Common Table Expressions (WITH/CTE)~~ ✓
+- ~~INSERT INTO ... DEFAULT VALUES~~ ✓
+- ~~NULLS FIRST/LAST in ORDER BY~~ ✓
+- ~~Simple CASE expression~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

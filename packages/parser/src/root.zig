@@ -202,6 +202,7 @@ pub const Expr = union(enum) {
     },
     window_func: struct {
         func: WindowFunc,
+        arg: ?*const Expr = null, // argument for aggregate window functions (SUM, AVG, etc.)
         partition_by: []const []const u8, // PARTITION BY columns (empty if none)
         order_by: []const OrderByItem, // ORDER BY items in OVER clause
     },
@@ -211,6 +212,12 @@ pub const WindowFunc = enum {
     row_number,
     rank,
     dense_rank,
+    win_sum,
+    win_avg,
+    win_count,
+    win_min,
+    win_max,
+    win_total,
 };
 
 pub const CastType = enum {
@@ -1603,6 +1610,21 @@ pub const Parser = struct {
                 } });
             }
             _ = try self.expect(.rparen);
+            // Check for OVER clause → window aggregate function
+            if (self.peek().type == .kw_over) {
+                _ = self.advance(); // consume OVER
+                _ = try self.expect(.lparen);
+                const wfunc: WindowFunc = switch (func) {
+                    .sum => .win_sum,
+                    .avg => .win_avg,
+                    .count => .win_count,
+                    .min => .win_min,
+                    .max => .win_max,
+                    .total => .win_total,
+                    else => return ParseError.UnexpectedToken,
+                };
+                return self.parseWindowOverClause(wfunc, arg_expr);
+            }
             return self.allocExpr(.{ .aggregate = .{ .func = func, .arg = arg_expr, .distinct = is_distinct } });
         }
 
@@ -1725,50 +1747,7 @@ pub const Parser = struct {
                 _ = try self.expect(.rparen); // window funcs take no args
                 _ = try self.expect(.kw_over);
                 _ = try self.expect(.lparen);
-                // Parse optional PARTITION BY
-                var partition_by: std.ArrayList([]const u8) = .{};
-                if (self.peek().type == .kw_partition) {
-                    _ = self.advance(); // consume PARTITION
-                    _ = try self.expect(.kw_by);
-                    while (true) {
-                        const col_tok = try self.expect(.identifier);
-                        partition_by.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
-                        if (self.peek().type == .comma) {
-                            _ = self.advance();
-                        } else break;
-                    }
-                }
-                // Parse optional ORDER BY
-                var order_items: std.ArrayList(OrderByItem) = .{};
-                if (self.peek().type == .kw_order) {
-                    _ = self.advance();
-                    _ = try self.expect(.kw_by);
-                    while (true) {
-                        const ob_expr = try self.parseExpr();
-                        const ob_col: []const u8 = if (ob_expr.* == .column_ref) ob_expr.column_ref else "";
-                        var ob_order: SortOrder = .asc;
-                        if (self.peek().type == .kw_asc) {
-                            _ = self.advance();
-                        } else if (self.peek().type == .kw_desc) {
-                            _ = self.advance();
-                            ob_order = .desc;
-                        }
-                        const ob_expr_val: ?*const Expr = if (ob_col.len == 0) ob_expr else blk: {
-                            self.allocator.destroy(@constCast(ob_expr));
-                            break :blk null;
-                        };
-                        order_items.append(self.allocator, .{ .column = ob_col, .order = ob_order, .expr = ob_expr_val }) catch return ParseError.OutOfMemory;
-                        if (self.peek().type == .comma) {
-                            _ = self.advance();
-                        } else break;
-                    }
-                }
-                _ = try self.expect(.rparen);
-                return self.allocExpr(.{ .window_func = .{
-                    .func = wfunc,
-                    .partition_by = partition_by.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
-                    .order_by = order_items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
-                } });
+                return self.parseWindowOverClause(wfunc, null);
             }
         }
 
@@ -1880,6 +1859,7 @@ pub const Parser = struct {
                 freeExpr(allocator, c.operand);
             },
             .window_func => |wf| {
+                if (wf.arg) |a| freeExpr(allocator, a);
                 allocator.free(wf.partition_by);
                 for (wf.order_by) |item| {
                     if (item.expr) |e| freeExpr(allocator, e);
@@ -1952,6 +1932,55 @@ pub const Parser = struct {
             }
         }
         return null;
+    }
+
+    /// Parse OVER clause internals (PARTITION BY ... ORDER BY ...) - lparen already consumed
+    fn parseWindowOverClause(self: *Parser, wfunc: WindowFunc, arg: ?*const Expr) ParseError!*const Expr {
+        // Parse optional PARTITION BY
+        var partition_by: std.ArrayList([]const u8) = .{};
+        if (self.peek().type == .kw_partition) {
+            _ = self.advance(); // consume PARTITION
+            _ = try self.expect(.kw_by);
+            while (true) {
+                const col_tok = try self.expect(.identifier);
+                partition_by.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                } else break;
+            }
+        }
+        // Parse optional ORDER BY
+        var order_items: std.ArrayList(OrderByItem) = .{};
+        if (self.peek().type == .kw_order) {
+            _ = self.advance();
+            _ = try self.expect(.kw_by);
+            while (true) {
+                const ob_expr = try self.parseExpr();
+                const ob_col: []const u8 = if (ob_expr.* == .column_ref) ob_expr.column_ref else "";
+                var ob_order: SortOrder = .asc;
+                if (self.peek().type == .kw_asc) {
+                    _ = self.advance();
+                } else if (self.peek().type == .kw_desc) {
+                    _ = self.advance();
+                    ob_order = .desc;
+                }
+                const ob_expr_val: ?*const Expr = if (ob_col.len == 0) ob_expr else blk: {
+                    self.allocator.destroy(@constCast(ob_expr));
+                    break :blk null;
+                };
+                order_items.append(self.allocator, .{ .column = ob_col, .order = ob_order, .expr = ob_expr_val }) catch return ParseError.OutOfMemory;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                } else break;
+            }
+        }
+        _ = try self.expect(.rparen);
+        return self.allocExpr(.{ .window_func = .{
+            .func = wfunc,
+            .arg = arg,
+            .partition_by = partition_by.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            .order_by = order_items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+        } });
     }
 
     fn parseCompOp(self: *Parser) ParseError!CompOp {

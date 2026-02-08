@@ -1368,16 +1368,123 @@ pub const Database = struct {
                     }
                 }
 
-                const val: i64 = switch (wf.func) {
-                    .row_number => row_num,
-                    .rank => rank,
-                    .dense_rank => dense_rank,
-                };
+                switch (wf.func) {
+                    .row_number => {
+                        proj_values[idx][col_idx] = .{ .integer = row_num };
+                    },
+                    .rank => {
+                        proj_values[idx][col_idx] = .{ .integer = rank };
+                    },
+                    .dense_rank => {
+                        proj_values[idx][col_idx] = .{ .integer = dense_rank };
+                    },
+                    .win_sum, .win_avg, .win_count, .win_min, .win_max, .win_total => {
+                        // Aggregate window functions are computed per-partition below
+                    },
+                }
 
-                proj_values[idx][col_idx] = .{ .integer = val };
                 proj_rows[idx] = .{ .values = proj_values[idx] };
                 prev_partition = idx;
             }
+
+            // For aggregate window functions, compute per-partition aggregates
+            switch (wf.func) {
+                .win_sum, .win_avg, .win_count, .win_min, .win_max, .win_total => {
+                    try self.computeWindowAggregates(wf, indices, col_idx, tbl, src_rows, proj_values, proj_rows);
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn computeWindowAggregates(
+        self: *Database,
+        wf: anytype,
+        indices: []const usize,
+        col_idx: usize,
+        tbl: *const Table,
+        src_rows: []const Row,
+        proj_values: [][]Value,
+        proj_rows: []Row,
+    ) !void {
+        // Process rows in sorted order (by partition then order)
+        // Group into partitions and compute aggregate for each
+        var part_start: usize = 0;
+        while (part_start < indices.len) {
+            // Find end of current partition
+            var part_end = part_start + 1;
+            while (part_end < indices.len) {
+                var same_partition = true;
+                for (wf.partition_by) |pcol| {
+                    const pi = tbl.findColumnIndex(pcol) orelse continue;
+                    if (compareValuesOrder(src_rows[indices[part_start]].values[pi], src_rows[indices[part_end]].values[pi]) != .eq) {
+                        same_partition = false;
+                        break;
+                    }
+                }
+                if (!same_partition) break;
+                part_end += 1;
+            }
+
+            // Compute aggregate over this partition
+            var agg_sum: f64 = 0;
+            var agg_count: i64 = 0;
+            var agg_min: Value = .null_val;
+            var agg_max: Value = .null_val;
+            var has_value = false;
+
+            for (part_start..part_end) |i| {
+                const row_idx = indices[i];
+                const is_star = if (wf.arg) |arg_expr| (arg_expr.* == .star) else true;
+                const val = if (is_star) Value{ .integer = 1 } else (self.evalExpr(wf.arg.?, tbl, src_rows[row_idx]) catch .null_val);
+
+                if (val == .null_val) continue;
+
+                if (wf.func == .win_count) {
+                    agg_count += 1;
+                } else {
+                    const fval = self.valueToF64(val) orelse 0;
+                    if (!has_value) {
+                        agg_sum = fval;
+                        agg_min = val;
+                        agg_max = val;
+                        agg_count = 1;
+                        has_value = true;
+                    } else {
+                        agg_sum += fval;
+                        agg_count += 1;
+                        if (compareValuesOrder(val, agg_min) == .lt) agg_min = val;
+                        if (compareValuesOrder(val, agg_max) == .gt) agg_max = val;
+                    }
+                }
+            }
+
+            // Determine the result value
+            const result: Value = switch (wf.func) {
+                .win_count => .{ .integer = agg_count },
+                .win_sum => if (has_value) blk: {
+                    // Return integer if all values were integers and result fits
+                    const int_val = @as(i64, @intFromFloat(agg_sum));
+                    if (agg_sum == @as(f64, @floatFromInt(int_val))) {
+                        break :blk Value{ .integer = int_val };
+                    }
+                    break :blk self.formatFloat(agg_sum);
+                } else .null_val,
+                .win_avg => if (agg_count > 0) self.formatFloat(agg_sum / @as(f64, @floatFromInt(agg_count))) else .null_val,
+                .win_min => agg_min,
+                .win_max => agg_max,
+                .win_total => self.formatFloat(agg_sum),
+                else => .null_val,
+            };
+
+            // Assign to all rows in this partition
+            for (part_start..part_end) |i| {
+                const row_idx = indices[i];
+                proj_values[row_idx][col_idx] = result;
+                proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+            }
+
+            part_start = part_end;
         }
     }
 
