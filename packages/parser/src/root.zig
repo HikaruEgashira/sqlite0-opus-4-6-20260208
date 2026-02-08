@@ -1169,6 +1169,8 @@ test "parse UPDATE" {
 
     switch (stmt) {
         .update => |upd| {
+            defer allocator.free(upd.set_columns);
+            defer allocator.free(upd.set_values);
             try std.testing.expectEqualStrings("users", upd.table_name);
             try std.testing.expect(upd.set_columns.len == 1);
             try std.testing.expectEqualStrings("name", upd.set_columns[0]);
