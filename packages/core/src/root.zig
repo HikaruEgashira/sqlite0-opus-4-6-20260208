@@ -44,6 +44,7 @@ const globMatch = value_mod.globMatch;
 
 pub const Database = struct {
     tables: std.StringHashMap(Table),
+    views: std.StringHashMap([]const u8), // view_name -> SELECT SQL
     allocator: std.mem.Allocator,
     // Temporary storage for projected rows (freed on next execute)
     projected_rows: ?[]Row = null,
@@ -58,6 +59,7 @@ pub const Database = struct {
     pub fn init(allocator: std.mem.Allocator) Database {
         return .{
             .tables = std.StringHashMap(Table).init(allocator),
+            .views = std.StringHashMap([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
@@ -70,6 +72,13 @@ pub const Database = struct {
             table.deinit();
         }
         self.tables.deinit();
+        // Free views
+        var vit = self.views.iterator();
+        while (vit.next()) |entry| {
+            self.allocator.free(@constCast(entry.key_ptr.*));
+            self.allocator.free(@constCast(entry.value_ptr.*));
+        }
+        self.views.deinit();
     }
 
     fn freeProjected(self: *Database) void {
@@ -2812,6 +2821,13 @@ pub const Database = struct {
             return self.executeTablelessSelect(sel);
         }
 
+        // Resolve view: if table_name is a view, materialize it as a temp table
+        if (!self.tables.contains(sel.table_name)) {
+            if (self.views.get(sel.table_name)) |view_sql_str| {
+                try self.materializeView(sel.table_name, view_sql_str);
+            }
+        }
+
         // Handle JOIN queries
         if (sel.joins.len > 0) {
             return self.executeJoin(sel);
@@ -2918,6 +2934,97 @@ pub const Database = struct {
             return self.projectColumns(sel, &table, result_rows);
         }
         return .{ .err = "table not found" };
+    }
+
+    /// Materialize a view as a temporary table for querying.
+    /// Cleanup is deferred to freeProjected via temp_cte_names.
+    fn materializeView(self: *Database, view_name: []const u8, view_sql: []const u8) !void {
+        // Save and restore projected state around view execution
+        const saved = self.saveProjectedState();
+        const view_result = try self.execute(view_sql);
+        const view_col_names = self.projected_column_names;
+        // Save inner projected state for cleanup after deep-copy
+        self.projected_column_names = null;
+        const inner_rows = self.projected_rows;
+        const inner_values = self.projected_values;
+        const inner_texts = self.projected_texts;
+        self.projected_rows = null;
+        self.projected_values = null;
+        self.projected_texts = null;
+        self.restoreProjectedState(saved);
+
+        switch (view_result) {
+            .rows => |rows| {
+                // Determine column count
+                const num_cols = if (rows.len > 0) rows[0].values.len else 0;
+                var cols = try self.allocator.alloc(Column, num_cols);
+                for (0..num_cols) |ci| {
+                    var col_name: []const u8 = "";
+                    if (view_col_names) |pcn| {
+                        if (ci < pcn.len) col_name = pcn[ci];
+                    }
+                    cols[ci] = .{ .name = try dupeStr(self.allocator, col_name), .col_type = "TEXT", .is_primary_key = false };
+                }
+                const tbl_name = try dupeStr(self.allocator, view_name);
+                var tbl = Table.init(self.allocator, tbl_name, cols);
+                // Deep-copy row values
+                for (rows) |row| {
+                    var new_values = try self.allocator.alloc(Value, row.values.len);
+                    for (row.values, 0..) |v, vi| {
+                        new_values[vi] = switch (v) {
+                            .text => |t| .{ .text = try dupeStr(self.allocator, t) },
+                            else => v,
+                        };
+                    }
+                    tbl.storage().append(self.allocator, .{ .values = new_values }) catch {};
+                }
+                self.tables.put(tbl_name, tbl) catch {};
+
+                // Register for cleanup in freeProjected (same as CTE pattern)
+                const cte_name = try dupeStr(self.allocator, view_name);
+                if (self.temp_cte_names) |existing| {
+                    var new_names = try self.allocator.alloc([]const u8, existing.len + 1);
+                    @memcpy(new_names[0..existing.len], existing);
+                    new_names[existing.len] = cte_name;
+                    self.allocator.free(existing);
+                    self.temp_cte_names = new_names;
+                } else {
+                    var new_names = try self.allocator.alloc([]const u8, 1);
+                    new_names[0] = cte_name;
+                    self.temp_cte_names = new_names;
+                }
+
+                // Free view column names and inner projected state
+                if (view_col_names) |pcn| {
+                    for (pcn) |name| self.allocator.free(name);
+                    self.allocator.free(pcn);
+                }
+                if (inner_texts) |pt| {
+                    for (pt) |t| self.allocator.free(t);
+                    self.allocator.free(pt);
+                }
+                if (inner_values) |pv| {
+                    for (pv) |v| self.allocator.free(v);
+                    self.allocator.free(pv);
+                }
+                if (inner_rows) |pr| self.allocator.free(pr);
+            },
+            else => {
+                if (view_col_names) |pcn| {
+                    for (pcn) |name| self.allocator.free(name);
+                    self.allocator.free(pcn);
+                }
+                if (inner_texts) |pt| {
+                    for (pt) |t| self.allocator.free(t);
+                    self.allocator.free(pt);
+                }
+                if (inner_values) |pv| {
+                    for (pv) |v| self.allocator.free(v);
+                    self.allocator.free(pv);
+                }
+                if (inner_rows) |pr| self.allocator.free(pr);
+            },
+        }
     }
 
     /// Handle SELECT without FROM (e.g., SELECT ABS(-10); SELECT 1+2;)
@@ -4275,6 +4382,26 @@ pub const Database = struct {
                 }
                 if (dt.if_exists) return .ok;
                 return .{ .err = "table not found" };
+            },
+            .create_view => |cv| {
+                defer self.allocator.free(@constCast(cv.select_sql));
+                if (self.views.contains(cv.view_name)) {
+                    if (cv.if_not_exists) return .ok;
+                    return .{ .err = "view already exists" };
+                }
+                const name = try dupeStr(self.allocator, cv.view_name);
+                const view_sql = try dupeStr(self.allocator, cv.select_sql);
+                self.views.put(name, view_sql) catch return .{ .err = "out of memory" };
+                return .ok;
+            },
+            .drop_view => |dv| {
+                if (self.views.fetchRemove(dv.view_name)) |entry| {
+                    self.allocator.free(@constCast(entry.key));
+                    self.allocator.free(@constCast(entry.value));
+                    return .ok;
+                }
+                if (dv.if_exists) return .ok;
+                return .{ .err = "view not found" };
             },
             .begin => {
                 if (self.in_transaction) return .{ .err = "cannot start a transaction within a transaction" };

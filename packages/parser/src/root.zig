@@ -289,6 +289,8 @@ pub const Statement = union(enum) {
     drop_table: DropTable,
     alter_table: AlterTable,
     with_cte: WithCTE,
+    create_view: CreateView,
+    drop_view: DropView,
     begin: void,
     commit: void,
     rollback: void,
@@ -372,6 +374,17 @@ pub const Statement = union(enum) {
 
     pub const DropTable = struct {
         table_name: []const u8,
+        if_exists: bool = false,
+    };
+
+    pub const CreateView = struct {
+        view_name: []const u8,
+        select_sql: []const u8,
+        if_not_exists: bool = false,
+    };
+
+    pub const DropView = struct {
+        view_name: []const u8,
         if_exists: bool = false,
     };
 
@@ -491,6 +504,9 @@ pub const Parser = struct {
         _ = try self.expect(.kw_create);
         if (self.peek().type == .kw_index) {
             return self.parseCreateIndex();
+        }
+        if (self.peek().type == .kw_view) {
+            return self.parseCreateView();
         }
         // Default: CREATE TABLE [IF NOT EXISTS]
         _ = try self.expect(.kw_table);
@@ -620,6 +636,27 @@ pub const Parser = struct {
                 .if_not_exists = if_not_exists,
             },
         };
+    }
+
+    fn parseCreateView(self: *Parser) ParseError!Statement {
+        // CREATE already consumed, VIEW is next
+        _ = try self.expect(.kw_view);
+        var if_not_exists = false;
+        if (self.peek().type == .kw_if) {
+            _ = self.advance();
+            _ = try self.expect(.kw_not);
+            _ = try self.expect(.kw_exists);
+            if_not_exists = true;
+        }
+        const name_tok = try self.expect(.identifier);
+        _ = try self.expect(.kw_as);
+        // Extract SELECT SQL until semicolon
+        const select_sql = try self.extractInsertSelectSQL();
+        return Statement{ .create_view = .{
+            .view_name = name_tok.lexeme,
+            .select_sql = select_sql,
+            .if_not_exists = if_not_exists,
+        } };
     }
 
     fn parseCreateIndex(self: *Parser) ParseError!Statement {
@@ -2279,6 +2316,22 @@ pub const Parser = struct {
 
     fn parseDropTable(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_drop);
+        // Handle DROP VIEW
+        if (self.peek().type == .kw_view) {
+            _ = self.advance();
+            var if_exists = false;
+            if (self.peek().type == .kw_if) {
+                _ = self.advance();
+                _ = try self.expect(.kw_exists);
+                if_exists = true;
+            }
+            const name_tok = try self.expect(.identifier);
+            _ = try self.expect(.semicolon);
+            return Statement{ .drop_view = .{
+                .view_name = name_tok.lexeme,
+                .if_exists = if_exists,
+            } };
+        }
         _ = try self.expect(.kw_table);
         var if_exists = false;
         if (self.peek().type == .kw_if) {
