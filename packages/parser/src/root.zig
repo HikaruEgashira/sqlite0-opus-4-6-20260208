@@ -615,7 +615,8 @@ pub const Parser = struct {
                 }
                 break;
             }
-            const col_name = try self.expect(.identifier);
+            // Accept identifiers and keywords as column names
+            const col_name = try self.expectAlias();
             // Column type is optional (default to TEXT if missing)
             const next_tok_type = self.peek().type;
             const has_type = (next_tok_type == .kw_integer or next_tok_type == .kw_text or

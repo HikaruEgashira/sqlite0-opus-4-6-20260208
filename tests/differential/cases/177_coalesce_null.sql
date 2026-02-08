@@ -1,0 +1,13 @@
+CREATE TABLE t (a INTEGER, b TEXT);
+INSERT INTO t VALUES (1, 'x'), (2, NULL), (3, 'z');
+SELECT a, COALESCE(b, 'default') FROM t;
+SELECT a, CASE WHEN b IS NULL THEN 'missing' ELSE b END FROM t;
+SELECT a, NULLIF(a, 2) FROM t;
+SELECT group_concat(a, ', ') FROM t;
+SELECT group_concat(b, '-') FROM t;
+SELECT COALESCE(NULL, NULL, 'found');
+SELECT NULLIF('same', 'same');
+SELECT NULLIF('diff', 'other');
+SELECT IIF(1, 'yes', 'no');
+SELECT IIF(0, 'yes', 'no');
+SELECT IIF(NULL, 'yes', 'no');

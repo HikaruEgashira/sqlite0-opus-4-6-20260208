@@ -347,7 +347,11 @@ pub fn evalExpr(self: *Database, expr: *const Expr, tbl: *const Table, row: Row)
                     // text -> integer
                     const text = val.text;
                     defer self.allocator.free(text);
-                    const n = std.fmt.parseInt(i64, text, 10) catch return .{ .integer = 0 };
+                    const n = std.fmt.parseInt(i64, text, 10) catch {
+                        // Try float conversion and truncate (SQLite behavior)
+                        const f = std.fmt.parseFloat(f64, text) catch return .{ .integer = 0 };
+                        return .{ .integer = @intFromFloat(f) };
+                    };
                     return .{ .integer = n };
                 },
                 .text => {
