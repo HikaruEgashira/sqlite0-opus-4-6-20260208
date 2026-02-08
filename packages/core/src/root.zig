@@ -2561,6 +2561,7 @@ pub const Database = struct {
                         .is_primary_key = col.is_primary_key,
                         .default_value = col.default_value,
                         .not_null = col.not_null,
+                        .autoincrement = col.autoincrement,
                     };
                 }
                 var table = Table.init(self.allocator, table_name, columns);

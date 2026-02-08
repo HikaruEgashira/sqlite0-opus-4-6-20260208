@@ -16,6 +16,7 @@ pub const Column = struct {
     is_primary_key: bool,
     default_value: ?[]const u8 = null,
     not_null: bool = false,
+    autoincrement: bool = false,
 };
 
 pub const TableSnapshot = struct {

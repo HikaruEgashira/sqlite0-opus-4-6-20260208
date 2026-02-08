@@ -20,6 +20,7 @@ pub const Table = struct {
     columns: []const Column,
     row_storage: ArrayListStorage,
     allocator: std.mem.Allocator,
+    next_rowid: i64 = 1,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, columns: []const Column) Table {
         return .{
@@ -39,7 +40,15 @@ pub const Table = struct {
         var values = try self.allocator.alloc(Value, raw_values.len);
         for (raw_values, 0..) |raw, i| {
             if (std.mem.eql(u8, raw, "NULL")) {
-                values[i] = .null_val;
+                // Auto-assign for INTEGER PRIMARY KEY (AUTOINCREMENT or implicit rowid)
+                if (i < self.columns.len and self.columns[i].is_primary_key and
+                    std.mem.eql(u8, self.columns[i].col_type, "INTEGER"))
+                {
+                    values[i] = .{ .integer = self.next_rowid };
+                    self.next_rowid += 1;
+                } else {
+                    values[i] = .null_val;
+                }
             } else if (raw.len >= 2 and raw[0] == '\'') {
                 values[i] = .{ .text = try dupeStr(self.allocator, raw[1 .. raw.len - 1]) };
             } else {
@@ -48,6 +57,14 @@ pub const Table = struct {
                     continue;
                 };
                 values[i] = .{ .integer = num };
+                // Track max rowid for autoincrement columns
+                if (i < self.columns.len and self.columns[i].is_primary_key and
+                    std.mem.eql(u8, self.columns[i].col_type, "INTEGER"))
+                {
+                    if (num >= self.next_rowid) {
+                        self.next_rowid = num + 1;
+                    }
+                }
             }
         }
         try self.storage().append(self.allocator, .{ .values = values });

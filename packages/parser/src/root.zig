@@ -11,6 +11,7 @@ pub const ColumnDef = struct {
     is_primary_key: bool,
     default_value: ?[]const u8 = null,
     not_null: bool = false,
+    autoincrement: bool = false,
 };
 
 pub const SortOrder = enum {
@@ -435,12 +436,16 @@ pub const Parser = struct {
             var is_pk = false;
             var default_val: ?[]const u8 = null;
             var not_null = false;
-            // Parse column constraints (PRIMARY KEY, NOT NULL, DEFAULT)
+            var autoincrement = false;
+            // Parse column constraints (PRIMARY KEY, NOT NULL, DEFAULT, AUTOINCREMENT)
             while (true) {
                 if (self.peek().type == .kw_primary) {
                     _ = self.advance();
                     _ = try self.expect(.kw_key);
                     is_pk = true;
+                } else if (self.peek().type == .kw_autoincrement) {
+                    _ = self.advance();
+                    autoincrement = true;
                 } else if (self.peek().type == .kw_not) {
                     _ = self.advance();
                     _ = try self.expect(.kw_null);
@@ -458,6 +463,7 @@ pub const Parser = struct {
                 .is_primary_key = is_pk,
                 .default_value = default_val,
                 .not_null = not_null,
+                .autoincrement = autoincrement,
             }) catch return ParseError.OutOfMemory;
 
             if (self.peek().type == .comma) {

@@ -74,6 +74,7 @@ pub const TokenType = enum {
     kw_cross,
     kw_outer,
     kw_default,
+    kw_autoincrement,
 
     // Literals
     integer_literal,
@@ -338,6 +339,7 @@ pub const Tokenizer = struct {
             .{ "CROSS", TokenType.kw_cross },
             .{ "OUTER", TokenType.kw_outer },
             .{ "DEFAULT", TokenType.kw_default },
+            .{ "AUTOINCREMENT", TokenType.kw_autoincrement },
         };
 
         inline for (keywords) |entry| {
