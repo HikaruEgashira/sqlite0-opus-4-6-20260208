@@ -213,6 +213,11 @@ pub const Tokenizer = struct {
             return .{ .type = tt, .lexeme = lexeme };
         }
 
+        // Quoted identifiers: "name" or `name`
+        if (c == '"' or c == '`') {
+            return self.readQuotedIdentifier(c);
+        }
+
         // String literal
         if (c == '\'') {
             return self.readString();
@@ -246,6 +251,19 @@ pub const Tokenizer = struct {
                 break;
             }
         }
+    }
+
+    fn readQuotedIdentifier(self: *Tokenizer, quote: u8) Token {
+        self.pos += 1; // skip opening quote
+        const start = self.pos;
+        while (self.pos < self.source.len and self.source[self.pos] != quote) {
+            self.pos += 1;
+        }
+        const lexeme = self.source[start..self.pos];
+        if (self.pos < self.source.len) {
+            self.pos += 1; // skip closing quote
+        }
+        return .{ .type = .identifier, .lexeme = lexeme };
     }
 
     fn readString(self: *Tokenizer) Token {
