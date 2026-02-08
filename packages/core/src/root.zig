@@ -311,6 +311,18 @@ pub const Database = struct {
                             else => unreachable,
                         } };
                     },
+                    .bit_and, .bit_or, .left_shift, .right_shift => {
+                        const l = self.valueToI64(left_val);
+                        const r = self.valueToI64(right_val);
+                        if (l == null or r == null) return .null_val;
+                        return .{ .integer = switch (bin.op) {
+                            .bit_and => l.? & r.?,
+                            .bit_or => l.? | r.?,
+                            .left_shift => if (r.? < 0 or r.? > 63) 0 else l.? << @intCast(@as(u6, @truncate(@as(u64, @bitCast(r.?))))),
+                            .right_shift => if (r.? < 0 or r.? > 63) 0 else l.? >> @intCast(@as(u6, @truncate(@as(u64, @bitCast(r.?))))),
+                            else => unreachable,
+                        } };
+                    },
                     .eq, .ne, .lt, .le, .gt, .ge, .like, .glob, .logical_and, .logical_or => unreachable,
                 }
             },
@@ -352,6 +364,11 @@ pub const Database = struct {
                     .not => {
                         if (operand_val == .null_val) return .null_val;
                         return .{ .integer = if (self.valueToBool(operand_val)) @as(i64, 0) else 1 };
+                    },
+                    .bit_not => {
+                        if (operand_val == .null_val) return .null_val;
+                        const v = self.valueToI64(operand_val) orelse return .null_val;
+                        return .{ .integer = ~v };
                     },
                 };
             },
@@ -506,6 +523,18 @@ pub const Database = struct {
                             .mul => l.? * r.?,
                             .div => if (r.? == 0) return .null_val else @divTrunc(l.?, r.?),
                             .mod => if (r.? == 0) return .null_val else @rem(l.?, r.?),
+                            else => unreachable,
+                        } };
+                    },
+                    .bit_and, .bit_or, .left_shift, .right_shift => {
+                        const l = self.valueToI64(left_val);
+                        const r = self.valueToI64(right_val);
+                        if (l == null or r == null) return .null_val;
+                        return .{ .integer = switch (bin.op) {
+                            .bit_and => l.? & r.?,
+                            .bit_or => l.? | r.?,
+                            .left_shift => if (r.? < 0 or r.? > 63) 0 else l.? << @intCast(@as(u6, @truncate(@as(u64, @bitCast(r.?))))),
+                            .right_shift => if (r.? < 0 or r.? > 63) 0 else l.? >> @intCast(@as(u6, @truncate(@as(u64, @bitCast(r.?))))),
                             else => unreachable,
                         } };
                     },

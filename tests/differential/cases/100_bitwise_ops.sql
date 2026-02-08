@@ -1,0 +1,12 @@
+-- Bitwise operator tests
+SELECT 6 & 3;
+SELECT 6 | 3;
+SELECT ~0;
+SELECT ~1;
+SELECT 1 << 4;
+SELECT 16 >> 2;
+SELECT 255 & 15;
+SELECT 240 | 15;
+SELECT 5 & 3 | 8;
+SELECT NULL & 5;
+SELECT 5 | NULL;

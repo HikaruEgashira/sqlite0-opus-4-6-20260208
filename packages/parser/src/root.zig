@@ -92,12 +92,17 @@ pub const BinOp = enum {
     glob, // GLOB pattern matching (case-sensitive)
     logical_and, // AND
     logical_or, // OR
+    bit_and, // &
+    bit_or, // |
+    left_shift, // <<
+    right_shift, // >>
 };
 
 pub const UnaryOp = enum {
     is_null,
     is_not_null,
     not,
+    bit_not, // ~
 };
 
 pub const ScalarFunc = enum {
@@ -1056,7 +1061,7 @@ pub const Parser = struct {
 
     /// Parse comparison operators: =, !=, <, <=, >, >=, LIKE, IS NULL, IS NOT NULL, IN
     fn parseComparison(self: *Parser) ParseError!*const Expr {
-        var left = try self.parseAddSub();
+        var left = try self.parseBitwise();
 
         while (true) {
             // IS NULL / IS NOT NULL
@@ -1194,6 +1199,26 @@ pub const Parser = struct {
         return left;
     }
 
+    /// Parse &, |, <<, >> (between addition and comparison)
+    fn parseBitwise(self: *Parser) ParseError!*const Expr {
+        var left = try self.parseAddSub();
+
+        while (true) {
+            const op: BinOp = switch (self.peek().type) {
+                .ampersand => .bit_and,
+                .pipe => .bit_or,
+                .left_shift => .left_shift,
+                .right_shift => .right_shift,
+                else => break,
+            };
+            _ = self.advance();
+            const right = try self.parseAddSub();
+            left = try self.allocExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+        }
+
+        return left;
+    }
+
     /// Parse +, -, || (medium precedence)
     fn parseAddSub(self: *Parser) ParseError!*const Expr {
         var left = try self.parseMulDiv();
@@ -1235,6 +1260,13 @@ pub const Parser = struct {
     /// Parse primary expressions: literals, column refs, aggregates, parenthesized exprs
     fn parsePrimary(self: *Parser) ParseError!*const Expr {
         const tok = self.peek();
+
+        // Bitwise NOT (~)
+        if (tok.type == .tilde) {
+            _ = self.advance();
+            const operand = try self.parsePrimary();
+            return try self.allocExpr(.{ .unary_op = .{ .op = .bit_not, .operand = operand } });
+        }
 
         // Unary minus
         if (tok.type == .minus) {

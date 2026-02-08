@@ -72,6 +72,7 @@ pub const TokenType = enum {
     kw_replace,
     kw_ignore,
     kw_cross,
+    kw_outer,
     kw_default,
 
     // Literals
@@ -100,6 +101,13 @@ pub const TokenType = enum {
     concat,  // ||
 
     modulo, // %
+
+    // Bitwise operators
+    ampersand, // &
+    pipe, // |
+    tilde, // ~
+    left_shift, // <<
+    right_shift, // >>
 
     // Special
     eof,
@@ -149,6 +157,21 @@ pub const Tokenizer = struct {
             self.pos += 2;
             return .{ .type = .concat, .lexeme = lexeme };
         }
+        if (c == '|') {
+            const lexeme = self.source[self.pos .. self.pos + 1];
+            self.pos += 1;
+            return .{ .type = .pipe, .lexeme = lexeme };
+        }
+        if (c == '<' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '<') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .left_shift, .lexeme = lexeme };
+        }
+        if (c == '>' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '>') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .right_shift, .lexeme = lexeme };
+        }
 
         // Single-character tokens
         const single_token: ?TokenType = switch (c) {
@@ -165,6 +188,8 @@ pub const Tokenizer = struct {
             '-' => .minus,
             '/' => .divide,
             '%' => .modulo,
+            '&' => .ampersand,
+            '~' => .tilde,
             else => null,
         };
 
@@ -311,6 +336,7 @@ pub const Tokenizer = struct {
             .{ "REPLACE", TokenType.kw_replace },
             .{ "IGNORE", TokenType.kw_ignore },
             .{ "CROSS", TokenType.kw_cross },
+            .{ "OUTER", TokenType.kw_outer },
             .{ "DEFAULT", TokenType.kw_default },
         };
 
