@@ -1062,6 +1062,168 @@ pub const Database = struct {
                 const matches = try globMatch(string_text, pattern_text);
                 return .{ .integer = if (matches) 1 else 0 };
             },
+            .ceil_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                if (val == .integer) return val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@ceil(f));
+            },
+            .floor_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                if (val == .integer) return val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@floor(f));
+            },
+            .sqrt_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                if (f < 0) return .null_val;
+                return self.formatFloat(@sqrt(f));
+            },
+            .power_fn => {
+                if (args.len != 2) return .null_val;
+                const base_val = try self.evalExpr(args[0], tbl, row);
+                defer if (base_val == .text) self.allocator.free(base_val.text);
+                const exp_val = try self.evalExpr(args[1], tbl, row);
+                defer if (exp_val == .text) self.allocator.free(exp_val.text);
+                if (base_val == .null_val or exp_val == .null_val) return .null_val;
+                const base_f = self.valueToF64(base_val) orelse return .null_val;
+                const exp_f = self.valueToF64(exp_val) orelse return .null_val;
+                return self.formatFloat(std.math.pow(f64, base_f, exp_f));
+            },
+            .log_fn => {
+                // LOG(x) = log10(x), LOG(base, x) = log_base(x)
+                if (args.len == 1) {
+                    const val = try self.evalExpr(args[0], tbl, row);
+                    defer if (val == .text) self.allocator.free(val.text);
+                    if (val == .null_val) return .null_val;
+                    const f = self.valueToF64(val) orelse return .null_val;
+                    if (f <= 0) return .null_val;
+                    return self.formatFloat(@log10(f));
+                } else if (args.len == 2) {
+                    const base_val = try self.evalExpr(args[0], tbl, row);
+                    defer if (base_val == .text) self.allocator.free(base_val.text);
+                    const x_val = try self.evalExpr(args[1], tbl, row);
+                    defer if (x_val == .text) self.allocator.free(x_val.text);
+                    if (base_val == .null_val or x_val == .null_val) return .null_val;
+                    const base_f = self.valueToF64(base_val) orelse return .null_val;
+                    const x_f = self.valueToF64(x_val) orelse return .null_val;
+                    if (base_f <= 0 or base_f == 1 or x_f <= 0) return .null_val;
+                    return self.formatFloat(@log(x_f) / @log(base_f));
+                }
+                return .null_val;
+            },
+            .log2_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                if (f <= 0) return .null_val;
+                return self.formatFloat(@log2(f));
+            },
+            .ln_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                if (f <= 0) return .null_val;
+                return self.formatFloat(@log(f));
+            },
+            .exp_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@exp(f));
+            },
+            .acos_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                if (f < -1 or f > 1) return .null_val;
+                return self.formatFloat(std.math.acos(f));
+            },
+            .asin_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                if (f < -1 or f > 1) return .null_val;
+                return self.formatFloat(std.math.asin(f));
+            },
+            .atan_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(std.math.atan(f));
+            },
+            .atan2_fn => {
+                if (args.len != 2) return .null_val;
+                const y_val = try self.evalExpr(args[0], tbl, row);
+                defer if (y_val == .text) self.allocator.free(y_val.text);
+                const x_val = try self.evalExpr(args[1], tbl, row);
+                defer if (x_val == .text) self.allocator.free(x_val.text);
+                if (y_val == .null_val or x_val == .null_val) return .null_val;
+                const y = self.valueToF64(y_val) orelse return .null_val;
+                const x = self.valueToF64(x_val) orelse return .null_val;
+                return self.formatFloat(std.math.atan2(y, x));
+            },
+            .cos_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@cos(f));
+            },
+            .sin_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@sin(f));
+            },
+            .tan_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@tan(f));
+            },
+            .pi_fn => {
+                return self.formatFloat(std.math.pi);
+            },
+            .mod_fn => {
+                if (args.len != 2) return .null_val;
+                const a_val = try self.evalExpr(args[0], tbl, row);
+                defer if (a_val == .text) self.allocator.free(a_val.text);
+                const b_val = try self.evalExpr(args[1], tbl, row);
+                defer if (b_val == .text) self.allocator.free(b_val.text);
+                if (a_val == .null_val or b_val == .null_val) return .null_val;
+                const a = self.valueToF64(a_val) orelse return .null_val;
+                const b = self.valueToF64(b_val) orelse return .null_val;
+                if (b == 0) return .null_val;
+                return self.formatFloat(@mod(a, b));
+            },
         }
     }
 
