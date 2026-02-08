@@ -869,6 +869,31 @@ pub const Database = struct {
         }
     }
 
+    /// Expand partial INSERT values to full row using column list and defaults
+    fn expandInsertValues(self: *Database, table: *Table, col_names: []const []const u8, values: []const []const u8) ![]const []const u8 {
+        var full_values = try self.allocator.alloc([]const u8, table.columns.len);
+        for (table.columns, 0..) |col, i| {
+            // Check if this column is in the insert column list
+            var found = false;
+            for (col_names, 0..) |cn, j| {
+                if (std.mem.eql(u8, cn, col.name)) {
+                    if (j < values.len) {
+                        full_values[i] = values[j];
+                    } else {
+                        full_values[i] = "NULL";
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Use default value or NULL
+                full_values[i] = col.default_value orelse "NULL";
+            }
+        }
+        return full_values;
+    }
+
     /// Check if a row with matching PK already exists
     fn hasPkConflict(self: *Database, table: *Table, raw_values: []const []const u8) bool {
         var pk_idx: ?usize = null;
@@ -2497,6 +2522,7 @@ pub const Database = struct {
                         .name = try dupeStr(self.allocator, col.name),
                         .col_type = col.col_type,
                         .is_primary_key = col.is_primary_key,
+                        .default_value = col.default_value,
                     };
                 }
                 var table = Table.init(self.allocator, table_name, columns);
@@ -2521,24 +2547,35 @@ pub const Database = struct {
                     if (ins.select_sql) |select_sql| {
                         return self.executeInsertSelect(table, select_sql);
                     }
+                    // Expand partial column lists with default values
+                    const values = if (ins.column_names.len > 0)
+                        self.expandInsertValues(table, ins.column_names, ins.values) catch ins.values
+                    else
+                        ins.values;
+                    defer if (ins.column_names.len > 0 and values.ptr != ins.values.ptr) self.allocator.free(values);
                     if (ins.replace_mode) {
-                        self.replaceRow(table, ins.values);
+                        self.replaceRow(table, values);
                     } else if (ins.ignore_mode) {
-                        if (!self.hasPkConflict(table, ins.values)) {
-                            try table.insertRow(ins.values);
+                        if (!self.hasPkConflict(table, values)) {
+                            try table.insertRow(values);
                         }
                     } else {
-                        try table.insertRow(ins.values);
+                        try table.insertRow(values);
                     }
                     for (ins.extra_rows) |row_values| {
+                        const expanded = if (ins.column_names.len > 0)
+                            self.expandInsertValues(table, ins.column_names, row_values) catch row_values
+                        else
+                            row_values;
+                        defer if (ins.column_names.len > 0 and expanded.ptr != row_values.ptr) self.allocator.free(expanded);
                         if (ins.replace_mode) {
-                            self.replaceRow(table, row_values);
+                            self.replaceRow(table, expanded);
                         } else if (ins.ignore_mode) {
-                            if (!self.hasPkConflict(table, row_values)) {
-                                try table.insertRow(row_values);
+                            if (!self.hasPkConflict(table, expanded)) {
+                                try table.insertRow(expanded);
                             }
                         } else {
-                            try table.insertRow(row_values);
+                            try table.insertRow(expanded);
                         }
                     }
                     return .ok;

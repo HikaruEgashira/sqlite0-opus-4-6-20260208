@@ -9,6 +9,7 @@ pub const ColumnDef = struct {
     name: []const u8,
     col_type: []const u8,
     is_primary_key: bool,
+    default_value: ?[]const u8 = null,
 };
 
 pub const SortOrder = enum {
@@ -254,6 +255,7 @@ pub const Statement = union(enum) {
         select_sql: ?[]const u8 = null, // INSERT INTO ... SELECT (raw SQL)
         replace_mode: bool = false, // REPLACE INTO / INSERT OR REPLACE behavior
         ignore_mode: bool = false, // INSERT OR IGNORE behavior
+        column_names: []const []const u8 = &.{}, // explicit column list (empty = all)
     };
 
     pub const Select = struct {
@@ -424,16 +426,25 @@ pub const Parser = struct {
             };
 
             var is_pk = false;
-            if (self.peek().type == .kw_primary) {
-                _ = self.advance();
-                _ = try self.expect(.kw_key);
-                is_pk = true;
+            var default_val: ?[]const u8 = null;
+            // Parse column constraints (PRIMARY KEY, DEFAULT)
+            while (true) {
+                if (self.peek().type == .kw_primary) {
+                    _ = self.advance();
+                    _ = try self.expect(.kw_key);
+                    is_pk = true;
+                } else if (self.peek().type == .kw_default) {
+                    _ = self.advance();
+                    const def_tok = self.advance();
+                    default_val = def_tok.lexeme;
+                } else break;
             }
 
             columns.append(self.allocator, .{
                 .name = col_name.lexeme,
                 .col_type = col_type_str,
                 .is_primary_key = is_pk,
+                .default_value = default_val,
             }) catch return ParseError.OutOfMemory;
 
             if (self.peek().type == .comma) {
@@ -494,6 +505,20 @@ pub const Parser = struct {
         _ = try self.expect(.kw_into);
         const name_tok = try self.expect(.identifier);
 
+        // Parse optional column list: INSERT INTO t(col1, col2, ...)
+        var col_names: std.ArrayList([]const u8) = .{};
+        if (self.peek().type == .lparen and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .identifier) {
+            _ = self.advance(); // consume '('
+            while (true) {
+                const col_tok = try self.expectAlias();
+                col_names.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                } else break;
+            }
+            _ = try self.expect(.rparen);
+        }
+
         // INSERT INTO ... SELECT or INSERT INTO ... VALUES
         if (self.peek().type == .kw_select) {
             const select_sql = try self.extractInsertSelectSQL();
@@ -505,6 +530,7 @@ pub const Parser = struct {
                     .select_sql = select_sql,
                     .replace_mode = replace_mode,
                     .ignore_mode = ignore_mode,
+                    .column_names = col_names.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 },
             };
         }
@@ -530,6 +556,7 @@ pub const Parser = struct {
                 .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .replace_mode = replace_mode,
                 .ignore_mode = ignore_mode,
+                .column_names = col_names.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             },
         };
     }

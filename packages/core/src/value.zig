@@ -14,6 +14,7 @@ pub const Column = struct {
     name: []const u8,
     col_type: []const u8,
     is_primary_key: bool,
+    default_value: ?[]const u8 = null,
 };
 
 pub const TableSnapshot = struct {
