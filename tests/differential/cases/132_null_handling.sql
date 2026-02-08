@@ -1,0 +1,21 @@
+-- NULL handling edge cases
+CREATE TABLE t (id INTEGER, val INTEGER, name TEXT);
+INSERT INTO t VALUES (1, NULL, 'a');
+INSERT INTO t VALUES (2, 10, NULL);
+INSERT INTO t VALUES (3, NULL, NULL);
+INSERT INTO t VALUES (4, 20, 'b');
+
+-- NULL in aggregates
+SELECT COUNT(*), COUNT(val), COUNT(name) FROM t;
+SELECT SUM(val), AVG(val), MIN(val), MAX(val) FROM t;
+
+-- NULL comparison
+SELECT * FROM t WHERE val IS NULL ORDER BY id;
+SELECT * FROM t WHERE val IS NOT NULL ORDER BY id;
+
+-- COALESCE with NULL
+SELECT id, COALESCE(val, -1), COALESCE(name, 'unknown') FROM t ORDER BY id;
+
+-- NULL in ORDER BY
+SELECT * FROM t ORDER BY val;
+SELECT * FROM t ORDER BY val DESC;

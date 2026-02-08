@@ -2419,10 +2419,11 @@ pub const Database = struct {
             },
             .min => {
                 if (rows.len == 0) return .null_val;
-                var min_val = rows[0].values[col_idx];
-                for (rows[1..]) |row| {
+                var min_val: Value = .null_val;
+                for (rows) |row| {
                     const v = row.values[col_idx];
-                    if (compareValuesOrder(v, min_val) == .lt) {
+                    if (v == .null_val) continue;
+                    if (min_val == .null_val or compareValuesOrder(v, min_val) == .lt) {
                         min_val = v;
                     }
                 }
@@ -2430,10 +2431,11 @@ pub const Database = struct {
             },
             .max => {
                 if (rows.len == 0) return .null_val;
-                var max_val = rows[0].values[col_idx];
-                for (rows[1..]) |row| {
+                var max_val: Value = .null_val;
+                for (rows) |row| {
                     const v = row.values[col_idx];
-                    if (compareValuesOrder(v, max_val) == .gt) {
+                    if (v == .null_val) continue;
+                    if (max_val == .null_val or compareValuesOrder(v, max_val) == .gt) {
                         max_val = v;
                     }
                 }
