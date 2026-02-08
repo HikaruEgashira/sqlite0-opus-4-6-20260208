@@ -133,12 +133,13 @@ pub fn takeSnapshot(self: *Database) !void {
                     .null_val => .null_val,
                 };
             }
-            rows[ri] = .{ .values = values };
+            rows[ri] = .{ .rowid = row.rowid, .values = values };
         }
         try snapshots.append(self.allocator, .{
             .name = try dupeStr(self.allocator, table.name),
             .columns = cols,
             .rows = rows,
+            .next_rowid = table.next_rowid,
         });
     }
     self.transaction_snapshot = try snapshots.toOwnedSlice(self.allocator);
@@ -177,8 +178,9 @@ pub fn restoreSnapshot(self: *Database) !void {
                     .null_val => .null_val,
                 };
             }
-            try table.storage().append(self.allocator, .{ .values = values });
+            try table.storage().append(self.allocator, .{ .rowid = row.rowid, .values = values });
         }
+        table.next_rowid = snap.next_rowid;
         try self.tables.put(table_name, table);
     }
 

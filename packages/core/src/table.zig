@@ -1,7 +1,7 @@
 const std = @import("std");
 const value_mod = @import("value.zig");
 const parser = @import("parser");
-const array_list_storage = @import("array_list_storage.zig");
+const btree_storage = @import("btree_storage.zig");
 const row_storage = @import("row_storage.zig");
 
 const Value = value_mod.Value;
@@ -12,13 +12,13 @@ const compareValuesOrder = value_mod.compareValuesOrder;
 const likeMatch = value_mod.likeMatch;
 const WhereClause = parser.WhereClause;
 const CompOp = parser.CompOp;
-const ArrayListStorage = array_list_storage.ArrayListStorage;
+const BTreeStorage = btree_storage.BTreeStorage;
 const RowStorage = row_storage.RowStorage;
 
 pub const Table = struct {
     name: []const u8,
     columns: []const Column,
-    row_storage: ArrayListStorage,
+    row_storage: BTreeStorage,
     allocator: std.mem.Allocator,
     next_rowid: i64 = 1,
 
@@ -26,7 +26,7 @@ pub const Table = struct {
         return .{
             .name = name,
             .columns = columns,
-            .row_storage = ArrayListStorage.init(),
+            .row_storage = BTreeStorage.init(allocator),
             .allocator = allocator,
         };
     }
@@ -38,6 +38,7 @@ pub const Table = struct {
 
     pub fn insertRow(self: *Table, raw_values: []const []const u8) !void {
         var values = try self.allocator.alloc(Value, raw_values.len);
+        var explicit_rowid: ?i64 = null;
         for (raw_values, 0..) |raw, i| {
             if (std.mem.eql(u8, raw, "NULL")) {
                 // Auto-assign for INTEGER PRIMARY KEY (AUTOINCREMENT or implicit rowid)
@@ -45,6 +46,7 @@ pub const Table = struct {
                     std.mem.eql(u8, self.columns[i].col_type, "INTEGER"))
                 {
                     values[i] = .{ .integer = self.next_rowid };
+                    explicit_rowid = self.next_rowid;
                     self.next_rowid += 1;
                 } else {
                     values[i] = .null_val;
@@ -61,13 +63,20 @@ pub const Table = struct {
                 if (i < self.columns.len and self.columns[i].is_primary_key and
                     std.mem.eql(u8, self.columns[i].col_type, "INTEGER"))
                 {
+                    explicit_rowid = num;
                     if (num >= self.next_rowid) {
                         self.next_rowid = num + 1;
                     }
                 }
             }
         }
-        try self.storage().append(self.allocator, .{ .values = values });
+        // Assign rowid: use INTEGER PRIMARY KEY value if available, otherwise auto-assign
+        const rowid = explicit_rowid orelse blk: {
+            const rid = self.next_rowid;
+            self.next_rowid += 1;
+            break :blk rid;
+        };
+        try self.storage().append(self.allocator, .{ .rowid = rowid, .values = values });
     }
 
     pub fn findColumnIndex(self: *const Table, col_name: []const u8) ?usize {
@@ -203,8 +212,6 @@ pub const Table = struct {
 
     pub fn deinit(self: *Table) void {
         const rows = self.storage().scan();
-        // Note: scan() returns a slice into row_storage.rows.items
-        // We need to iterate before deinitializing storage
         for (rows) |row| {
             self.freeRow(row);
         }

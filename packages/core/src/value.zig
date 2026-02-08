@@ -7,6 +7,7 @@ pub const Value = union(enum) {
 };
 
 pub const Row = struct {
+    rowid: i64 = 0,
     values: []Value,
 };
 
@@ -25,6 +26,7 @@ pub const TableSnapshot = struct {
     name: []const u8,
     columns: []const Column,
     rows: []const Row,
+    next_rowid: i64 = 1,
 };
 
 pub fn dupeStr(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {

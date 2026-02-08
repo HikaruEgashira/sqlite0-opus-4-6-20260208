@@ -53,7 +53,7 @@ pub fn executeSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
         return self.executeJoin(sel);
     }
 
-    if (self.tables.get(sel.table_name)) |table| {
+    if (self.tables.getPtr(sel.table_name)) |table| {
         // Set current table alias for correlated subquery context
         const saved_alias = self.current_table_alias;
         self.current_table_alias = sel.table_alias;
@@ -65,11 +65,11 @@ pub fn executeSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
         const src_rows = table.storage().scan();
         for (src_rows) |row| {
             if (sel.where_expr) |we| {
-                const val = try self.evalExpr(we, &table, row);
+                const val = try self.evalExpr(we, table, row);
                 defer if (val == .text) self.allocator.free(val.text);
                 if (!self.valueToBool(val)) continue;
             } else if (sel.where) |where| {
-                if (!(try self.matchesWhereWithSubquery(&table, row, where))) continue;
+                if (!(try self.matchesWhereWithSubquery(table, row, where))) continue;
             }
             try matching_rows.append(self.allocator, row);
         }
@@ -94,12 +94,12 @@ pub fn executeSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
         };
 
         if (has_agg or sel.group_by != null) {
-            return self.executeAggregate(&table, sel, matching_rows.items);
+            return self.executeAggregate(table, sel, matching_rows.items);
         }
 
         // Apply ORDER BY (multi-column)
         if (sel.order_by) |order_by| {
-            try self.sortRowsByOrderBy(&table, matching_rows.items, order_by.items);
+            try self.sortRowsByOrderBy(table, matching_rows.items, order_by.items);
         }
 
         // Apply DISTINCT (remove duplicate rows)
@@ -153,10 +153,10 @@ pub fn executeSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
 
         // If any expression is complex (not a simple column), evaluate using Expr AST
         if (has_expr) {
-            return evaluateExprSelect(self, sel, &table, result_rows);
+            return evaluateExprSelect(self, sel, table, result_rows);
         }
 
-        return projectColumns(self, sel, &table, result_rows);
+        return projectColumns(self, sel, table, result_rows);
     }
     return .{ .err = "table not found" };
 }
@@ -201,7 +201,9 @@ pub fn materializeView(self: *Database, view_name: []const u8, view_sql: []const
                         else => v,
                     };
                 }
-                tbl.storage().append(self.allocator, .{ .values = new_values }) catch {};
+                const rowid = tbl.next_rowid;
+                tbl.next_rowid += 1;
+                tbl.storage().append(self.allocator, .{ .rowid = rowid, .values = new_values }) catch {};
             }
             self.tables.put(tbl_name, tbl) catch {};
 
@@ -257,6 +259,7 @@ pub fn executeTablelessSelect(self: *Database, sel: Statement.Select) !ExecuteRe
     const expr_count = sel.result_exprs.len;
     // Create a dummy table with no columns for evalExpr context
     var dummy_table = Table.init(self.allocator, "", &.{});
+    defer dummy_table.row_storage.storage().deinit(self.allocator);
     const dummy_row = Row{ .values = &.{} };
 
     var values = try self.allocator.alloc(Value, expr_count);

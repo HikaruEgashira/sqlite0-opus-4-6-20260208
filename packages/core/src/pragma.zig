@@ -18,7 +18,7 @@ const ExecuteResult = root.ExecuteResult;
 pub fn executePragma(self: *Database, pragma: Statement.Pragma) !ExecuteResult {
     if (std.ascii.eqlIgnoreCase(pragma.name, "table_info")) {
         const table_name = pragma.arg orelse return .{ .err = "PRAGMA table_info requires a table name" };
-        const table = self.tables.get(table_name) orelse return .{ .err = "no such table" };
+        const table = self.tables.getPtr(table_name) orelse return .{ .err = "no such table" };
 
         const col_count = table.columns.len;
         var result_rows = self.allocator.alloc(Row, col_count) catch return .{ .err = "out of memory" };
@@ -178,6 +178,7 @@ pub fn executeSqliteMaster(self: *Database, sel: Statement.Select) !ExecuteResul
         .{ .name = "sql", .col_type = "TEXT", .is_primary_key = false },
     };
     var tmp_table = Table.init(self.allocator, "sqlite_master", &master_cols);
+    defer tmp_table.row_storage.storage().deinit(self.allocator);
     _ = &tmp_table;
 
     // Apply WHERE filter

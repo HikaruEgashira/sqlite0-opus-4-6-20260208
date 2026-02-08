@@ -579,6 +579,7 @@ pub const Database = struct {
                     // Expression-based VALUES: evaluate each row's expressions
                     if (ins.value_exprs.len > 0) {
                         var dummy_table = Table.init(self.allocator, "", &.{});
+                        defer dummy_table.row_storage.storage().deinit(self.allocator);
                         const dummy_row = Row{ .values = &.{} };
                         for (ins.value_exprs) |expr_row| {
                             var str_values = try self.allocator.alloc([]const u8, expr_row.len);

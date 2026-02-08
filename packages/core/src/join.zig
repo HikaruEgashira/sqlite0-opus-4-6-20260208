@@ -25,7 +25,7 @@ const Statement = parser.Statement;
 const AliasOffset = root.AliasOffset;
 
 pub fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
-    const first_table = self.tables.get(sel.table_name) orelse return .{ .err = "table not found" };
+    const first_table = self.tables.getPtr(sel.table_name) orelse return .{ .err = "table not found" };
 
     // Build combined columns and rows iteratively through each JOIN
     var combined_cols_list: std.ArrayList(Column) = .{};
@@ -51,12 +51,12 @@ pub fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
         .name = sel.table_name,
         .alias = sel.table_alias orelse sel.table_name,
         .offset = 0,
-        .table = &first_table,
+        .table = first_table,
     });
 
     // Process each JOIN
     for (sel.joins) |join| {
-        const right_table = self.tables.get(join.table_name) orelse return .{ .err = "table not found" };
+        const right_table = self.tables.getPtr(join.table_name) orelse return .{ .err = "table not found" };
         const left_col_count = combined_cols_list.items.len;
         const right_col_count = right_table.columns.len;
         const total_cols = left_col_count + right_col_count;
@@ -66,7 +66,7 @@ pub fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
             .name = join.table_name,
             .alias = join.table_alias orelse join.table_name,
             .offset = left_col_count,
-            .table = &right_table,
+            .table = right_table,
         });
 
         var new_rows: std.ArrayList(Row) = .{};
@@ -192,6 +192,7 @@ pub fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
         defer self.allocator.free(combined_cols);
         @memcpy(combined_cols, combined_cols_list.items);
         var tmp_table = Table.init(self.allocator, "joined", combined_cols);
+        defer tmp_table.row_storage.storage().deinit(self.allocator);
         var i: usize = joined_rows.items.len;
         while (i > 0) {
             i -= 1;
@@ -311,6 +312,7 @@ pub fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
         self.join_alias_offsets = alias_offsets.items;
         defer self.join_alias_offsets = null;
         const agg_result = try self.executeAggregate(&tmp_table, sel, result_rows);
+        tmp_table.row_storage.storage().deinit(self.allocator);
         self.allocator.free(combined_cols);
         for (joined_values.items) |v| self.allocator.free(v);
         joined_values.deinit(self.allocator);
@@ -334,6 +336,7 @@ pub fn executeJoin(self: *Database, sel: Statement.Select) !ExecuteResult {
         self.join_alias_offsets = alias_offsets.items;
         const expr_result = try self.evaluateExprSelect(sel, &tmp_table, result_rows);
         self.join_alias_offsets = null;
+        tmp_table.row_storage.storage().deinit(self.allocator);
         self.allocator.free(combined_cols);
         for (joined_values.items) |v| self.allocator.free(v);
         joined_values.deinit(self.allocator);

@@ -351,7 +351,9 @@ pub fn executeInsertSelect(self: *Database, table: *Table, select_sql: []const u
                         .null_val => .null_val,
                     };
                 }
-                try table.storage().append(self.allocator, .{ .values = new_values });
+                const rowid = table.next_rowid;
+                table.next_rowid += 1;
+                try table.storage().append(self.allocator, .{ .rowid = rowid, .values = new_values });
             }
         },
         .err => |e| {
