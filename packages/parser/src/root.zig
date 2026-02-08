@@ -265,6 +265,7 @@ pub const Statement = union(enum) {
     update: Update,
     drop_table: DropTable,
     alter_table: AlterTable,
+    with_cte: WithCTE,
     begin: void,
     commit: void,
     rollback: void,
@@ -350,6 +351,16 @@ pub const Statement = union(enum) {
         if_exists: bool = false,
     };
 
+    pub const CteDef = struct {
+        name: []const u8,
+        query_sql: []const u8, // raw SQL for the CTE query
+    };
+
+    pub const WithCTE = struct {
+        ctes: []const CteDef,
+        main_sql: []const u8, // raw SQL for the main statement after CTEs
+    };
+
     pub const AlterTable = union(enum) {
         add_column: struct {
             table_name: []const u8,
@@ -390,6 +401,7 @@ pub const Parser = struct {
     pub fn parse(self: *Parser) ParseError!Statement {
         const tok = self.peek();
         return switch (tok.type) {
+            .kw_with => self.parseWith(),
             .kw_create => self.parseCreate(),
             .kw_insert => self.parseInsert(),
             .kw_replace => self.parseReplace(),
@@ -2142,6 +2154,71 @@ pub const Parser = struct {
         if (self.peek().type == .kw_transaction) _ = self.advance();
         _ = try self.expect(.semicolon);
         return Statement{ .commit = {} };
+    }
+
+    fn parseWith(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_with);
+        var ctes: std.ArrayList(Statement.CteDef) = .{};
+
+        while (true) {
+            const name_tok = try self.expectAlias();
+            _ = try self.expect(.kw_as);
+            _ = try self.expect(.lparen);
+
+            // Extract SQL inside parentheses (handle nested parens)
+            const start_ptr = self.peek().lexeme.ptr;
+            var depth: usize = 1;
+            while (depth > 0 and self.peek().type != .eof) {
+                const t = self.advance();
+                if (t.type == .lparen) depth += 1;
+                if (t.type == .rparen) depth -= 1;
+            }
+            // Now positioned just past the closing paren; prev token is ')'
+            const close_tok = self.tokens[self.pos - 1];
+            // The SQL is between start_ptr and the token before ')'
+            if (self.pos < 2) return ParseError.UnexpectedToken;
+            const before_close = self.tokens[self.pos - 2];
+            const end_ptr = before_close.lexeme.ptr + before_close.lexeme.len;
+            const sql_len = @intFromPtr(end_ptr) - @intFromPtr(start_ptr);
+            _ = close_tok;
+
+            var buf = self.allocator.alloc(u8, sql_len + 1) catch return ParseError.OutOfMemory;
+            @memcpy(buf[0..sql_len], start_ptr[0..sql_len]);
+            buf[sql_len] = ';';
+
+            ctes.append(self.allocator, .{
+                .name = name_tok.lexeme,
+                .query_sql = buf[0 .. sql_len + 1],
+            }) catch return ParseError.OutOfMemory;
+
+            // Check for comma (more CTEs) or move to main statement
+            if (self.peek().type == .comma) {
+                _ = self.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Extract the main statement SQL (everything until ';')
+        const main_start = self.peek().lexeme.ptr;
+        while (self.peek().type != .semicolon and self.peek().type != .eof) {
+            _ = self.advance();
+        }
+        if (self.peek().type != .semicolon) return ParseError.UnexpectedToken;
+        const prev = self.tokens[self.pos - 1];
+        const main_end = prev.lexeme.ptr + prev.lexeme.len;
+        const main_len = @intFromPtr(main_end) - @intFromPtr(main_start);
+
+        _ = self.advance(); // consume ';'
+
+        var main_buf = self.allocator.alloc(u8, main_len + 1) catch return ParseError.OutOfMemory;
+        @memcpy(main_buf[0..main_len], main_start[0..main_len]);
+        main_buf[main_len] = ';';
+
+        return Statement{ .with_cte = .{
+            .ctes = ctes.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            .main_sql = main_buf[0 .. main_len + 1],
+        } };
     }
 
     fn parseRollback(self: *Parser) ParseError!Statement {

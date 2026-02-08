@@ -49,6 +49,7 @@ pub const Database = struct {
     projected_values: ?[][]Value = null,
     projected_texts: ?[][]const u8 = null, // Text values allocated by aggregate functions
     projected_column_names: ?[][]const u8 = null, // Column names from last SELECT
+    temp_cte_names: ?[][]const u8 = null, // CTE table names to clean up
     // Transaction state
     in_transaction: bool = false,
     transaction_snapshot: ?[]TableSnapshot = null,
@@ -95,6 +96,20 @@ pub const Database = struct {
         if (self.projected_rows) |pr| {
             self.allocator.free(pr);
             self.projected_rows = null;
+        }
+        // Clean up CTE temporary tables
+        if (self.temp_cte_names) |names| {
+            for (names) |name| {
+                // Must remove from hash map BEFORE deiniting table,
+                // because table.name is the same allocation as the hash map key
+                if (self.tables.fetchRemove(name)) |kv| {
+                    var tbl = kv.value;
+                    tbl.deinit();
+                }
+                self.allocator.free(name);
+            }
+            self.allocator.free(names);
+            self.temp_cte_names = null;
         }
     }
 
@@ -1116,6 +1131,94 @@ pub const Database = struct {
             }
         }
         return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+    }
+
+    /// Execute WITH (Common Table Expressions)
+    fn executeWithCTE(self: *Database, wc: Statement.WithCTE) !ExecuteResult {
+        // Track CTE table names for deferred cleanup (in freeProjected)
+        var cte_names: std.ArrayList([]const u8) = .{};
+
+        // Execute each CTE and create temporary tables
+        for (wc.ctes) |cte| {
+            // Save projected state
+            const saved_rows = self.projected_rows;
+            const saved_values = self.projected_values;
+            const saved_texts = self.projected_texts;
+            const saved_col_names = self.projected_column_names;
+            self.projected_rows = null;
+            self.projected_values = null;
+            self.projected_texts = null;
+            self.projected_column_names = null;
+
+            const result = try self.execute(cte.query_sql);
+
+            switch (result) {
+                .rows => |rows| {
+                    // Create table with inferred columns
+                    const ncols = if (rows.len > 0) rows[0].values.len else if (self.projected_column_names) |cn| cn.len else 0;
+                    var columns = try self.allocator.alloc(Column, ncols);
+                    for (0..ncols) |i| {
+                        const col_name = if (self.projected_column_names) |cn| blk: {
+                            if (i < cn.len) break :blk try dupeStr(self.allocator, cn[i]);
+                            break :blk try std.fmt.allocPrint(self.allocator, "column{d}", .{i});
+                        } else try std.fmt.allocPrint(self.allocator, "column{d}", .{i});
+                        columns[i] = .{
+                            .name = col_name,
+                            .col_type = "TEXT",
+                            .is_primary_key = false,
+                        };
+                    }
+                    const tname = try dupeStr(self.allocator, cte.name);
+                    var table = Table.init(self.allocator, tname, columns);
+                    for (rows) |row| {
+                        var text_values = try self.allocator.alloc([]const u8, ncols);
+                        defer self.allocator.free(text_values);
+                        for (row.values, 0..) |val, i| {
+                            text_values[i] = self.valueToText(val);
+                        }
+                        try table.insertRow(text_values);
+                        for (text_values) |tv| self.allocator.free(tv);
+                    }
+                    try self.tables.put(tname, table);
+                    try cte_names.append(self.allocator, try dupeStr(self.allocator, cte.name));
+                },
+                .err => |e| {
+                    self.freeProjected();
+                    self.projected_rows = saved_rows;
+                    self.projected_values = saved_values;
+                    self.projected_texts = saved_texts;
+                    self.projected_column_names = saved_col_names;
+                    for (cte_names.items) |name| {
+                        if (self.tables.getPtr(name)) |tbl| {
+                            tbl.deinit();
+                            _ = self.tables.remove(name);
+                        }
+                        self.allocator.free(name);
+                    }
+                    cte_names.deinit(self.allocator);
+                    return .{ .err = e };
+                },
+                .ok => {},
+            }
+
+            self.freeProjected();
+            self.projected_rows = saved_rows;
+            self.projected_values = saved_values;
+            self.projected_texts = saved_texts;
+            self.projected_column_names = saved_col_names;
+        }
+
+        // Register CTE names for deferred cleanup (cleaned up in freeProjected on next execute)
+        // But hide them from the upcoming execute() call's freeProjected, which would delete them too early
+        const cte_slice = cte_names.toOwnedSlice(self.allocator) catch null;
+
+        // Execute the main statement (CTE tables are available as regular tables)
+        const main_result = self.execute(wc.main_sql);
+
+        // Now register for cleanup on next freeProjected call
+        self.temp_cte_names = cte_slice;
+
+        return main_result;
     }
 
     /// Execute CREATE TABLE ... AS SELECT
@@ -3258,6 +3361,16 @@ pub const Database = struct {
             .create_index => {
                 // Syntax accepted, metadata-only (no actual index acceleration yet)
                 return .ok;
+            },
+            .with_cte => |wc| {
+                defer {
+                    for (wc.ctes) |cte| {
+                        self.allocator.free(@constCast(cte.query_sql));
+                    }
+                    self.allocator.free(wc.ctes);
+                    self.allocator.free(@constCast(wc.main_sql));
+                }
+                return self.executeWithCTE(wc);
             },
             .insert => |ins| {
                 defer if (ins.select_sql == null) self.allocator.free(ins.values);
