@@ -339,7 +339,7 @@ pub const Statement = union(enum) {
         joins: []const JoinClause = &.{},
         where: ?WhereClause,
         where_expr: ?*const Expr = null, // Expr-based WHERE (Phase 6c)
-        group_by: ?[]const []const u8, // column names (multiple GROUP BY columns)
+        group_by: ?[]const *const Expr, // GROUP BY expressions
         having: ?HavingClause,
         having_expr: ?*const Expr = null,
         order_by: ?OrderByClause,
@@ -1033,22 +1033,22 @@ pub const Parser = struct {
             where_expr = try self.parseWhereExpr();
         }
 
-        // Parse optional GROUP BY
-        var group_by: ?[]const []const u8 = null;
+        // Parse optional GROUP BY (expression-based)
+        var group_by: ?[]const *const Expr = null;
         if (self.peek().type == .kw_group) {
             _ = self.advance();
             _ = try self.expect(.kw_by);
-            var gb_cols: std.ArrayList([]const u8) = .{};
+            var gb_exprs: std.ArrayList(*const Expr) = .{};
             while (true) {
-                const gb_tok = try self.expect(.identifier);
-                gb_cols.append(self.allocator, gb_tok.lexeme) catch return ParseError.OutOfMemory;
+                const expr = try self.parseWhereExpr();
+                gb_exprs.append(self.allocator, expr) catch return ParseError.OutOfMemory;
                 if (self.peek().type == .comma) {
                     _ = self.advance();
                 } else {
                     break;
                 }
             }
-            group_by = gb_cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+            group_by = gb_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         }
 
         // Parse optional HAVING (expr-based)
