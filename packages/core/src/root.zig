@@ -347,6 +347,10 @@ pub const Database = struct {
                 // Aggregate expressions are evaluated differently (in computeAgg)
                 return .null_val;
             },
+            .window_func => {
+                // Window functions are evaluated in post-processing (evaluateWindowFunctions)
+                return .{ .integer = 0 }; // placeholder
+            },
             .case_when => |cw| {
                 // Evaluate CASE WHEN: find first condition that is true
                 for (cw.conditions, cw.results) |cond_expr, result_expr| {
@@ -1104,6 +1108,126 @@ pub const Database = struct {
             }
         }
         return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+    }
+
+    /// Evaluate window functions and fill in values in projected rows
+    fn evaluateWindowFunctions(
+        self: *Database,
+        result_exprs: []const *const Expr,
+        proj_rows: []Row,
+        proj_values: [][]Value,
+        tbl: *const Table,
+        src_rows: []const Row,
+    ) !void {
+        const row_count = proj_rows.len;
+        if (row_count == 0) return;
+
+        for (result_exprs, 0..) |expr, col_idx| {
+            if (expr.* != .window_func) continue;
+            const wf = expr.window_func;
+
+            // Build sort indices based on OVER (PARTITION BY ... ORDER BY ...)
+            var indices = try self.allocator.alloc(usize, row_count);
+            defer self.allocator.free(indices);
+            for (0..row_count) |i| indices[i] = i;
+
+            // Sort indices by partition columns then order columns
+            const SortCtx = struct {
+                db: *Database,
+                tbl: *const Table,
+                src_rows: []const Row,
+                wf: @TypeOf(wf),
+
+                fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                    // Compare partition columns first
+                    for (ctx.wf.partition_by) |pcol| {
+                        const pa_idx = ctx.tbl.findColumnIndex(pcol) orelse continue;
+                        const va = ctx.src_rows[a].values[pa_idx];
+                        const vb = ctx.src_rows[b].values[pa_idx];
+                        const cmp = compareValuesOrder(va, vb);
+                        if (cmp == .lt) return true;
+                        if (cmp == .gt) return false;
+                    }
+                    // Then compare order columns
+                    for (ctx.wf.order_by) |ob| {
+                        if (ob.column.len > 0) {
+                            const oi = ctx.tbl.findColumnIndex(ob.column) orelse continue;
+                            const va = ctx.src_rows[a].values[oi];
+                            const vb = ctx.src_rows[b].values[oi];
+                            const cmp = compareValuesOrder(va, vb);
+                            if (ob.order == .asc) {
+                                if (cmp == .lt) return true;
+                                if (cmp == .gt) return false;
+                            } else {
+                                if (cmp == .gt) return true;
+                                if (cmp == .lt) return false;
+                            }
+                        }
+                    }
+                    return false;
+                }
+            };
+
+            const ctx = SortCtx{ .db = self, .tbl = tbl, .src_rows = src_rows, .wf = wf };
+            std.mem.sortUnstable(usize, indices, ctx, SortCtx.lessThan);
+
+            // Compute window function values
+            var row_num: i64 = 0;
+            var rank: i64 = 0;
+            var dense_rank: i64 = 0;
+            var prev_partition: ?usize = null;
+
+            for (indices) |idx| {
+                // Check partition boundary
+                var new_partition = false;
+                if (prev_partition == null) {
+                    new_partition = true;
+                } else {
+                    for (wf.partition_by) |pcol| {
+                        const pi = tbl.findColumnIndex(pcol) orelse continue;
+                        if (compareValuesOrder(src_rows[idx].values[pi], src_rows[prev_partition.?].values[pi]) != .eq) {
+                            new_partition = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (new_partition) {
+                    row_num = 1;
+                    rank = 1;
+                    dense_rank = 1;
+                } else {
+                    row_num += 1;
+                    // Check if order values are same as previous row (for RANK/DENSE_RANK)
+                    var same_order = true;
+                    for (wf.order_by) |ob| {
+                        if (ob.column.len > 0) {
+                            const oi = tbl.findColumnIndex(ob.column) orelse continue;
+                            if (compareValuesOrder(src_rows[idx].values[oi], src_rows[prev_partition.?].values[oi]) != .eq) {
+                                same_order = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (same_order) {
+                        // Same rank values
+                    } else {
+                        rank = row_num;
+                        dense_rank += 1;
+                    }
+                }
+
+                const val: i64 = switch (wf.func) {
+                    .row_number => row_num,
+                    .rank => rank,
+                    .dense_rank => dense_rank,
+                };
+
+                proj_values[idx][col_idx] = .{ .integer = val };
+                proj_rows[idx] = .{ .values = proj_values[idx] };
+                prev_partition = idx;
+            }
+        }
     }
 
     /// Expand partial INSERT values to full row using column list and defaults
@@ -1943,6 +2067,66 @@ pub const Database = struct {
             }
             proj_values[ri] = values;
             proj_rows[ri] = .{ .values = values };
+        }
+
+        // Evaluate window functions (post-processing)
+        try self.evaluateWindowFunctions(sel.result_exprs, proj_rows, proj_values, tbl, result_rows);
+
+        // Re-sort by ORDER BY (resolving aliases to projected column indices)
+        if (sel.order_by) |order_by| {
+            var ob_indices = try self.allocator.alloc(usize, order_by.items.len);
+            defer self.allocator.free(ob_indices);
+            var ob_descs = try self.allocator.alloc(bool, order_by.items.len);
+            defer self.allocator.free(ob_descs);
+            var all_resolved = true;
+            for (order_by.items, 0..) |item, oi| {
+                ob_descs[oi] = item.order == .desc;
+                var col_idx: ?usize = null;
+                if (item.column.len > 0) {
+                    // Check aliases first
+                    for (sel.aliases, 0..) |alias, ai| {
+                        if (alias) |a| {
+                            if (std.ascii.eqlIgnoreCase(item.column, a)) {
+                                col_idx = ai;
+                                break;
+                            }
+                        }
+                    }
+                    // Fallback: check column refs in result_exprs
+                    if (col_idx == null) {
+                        for (sel.result_exprs, 0..) |rexpr, ei| {
+                            if (rexpr.* == .column_ref and std.mem.eql(u8, rexpr.column_ref, item.column)) {
+                                col_idx = ei;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (col_idx) |ci| {
+                    ob_indices[oi] = ci;
+                } else {
+                    all_resolved = false;
+                    break;
+                }
+            }
+            if (all_resolved) {
+                const MultiSortCtx2 = struct {
+                    indices: []const usize,
+                    descs: []const bool,
+                    fn lessThan(ctx2: @This(), a: Row, b: Row) bool {
+                        for (ctx2.indices, ctx2.descs) |ci, is_desc| {
+                            const va = a.values[ci];
+                            const vb = b.values[ci];
+                            const cmp = compareValuesOrder(va, vb);
+                            if (cmp == .eq) continue;
+                            if (is_desc) return cmp == .gt;
+                            return cmp == .lt;
+                        }
+                        return false;
+                    }
+                };
+                std.mem.sort(Row, proj_rows, MultiSortCtx2{ .indices = ob_indices, .descs = ob_descs }, MultiSortCtx2.lessThan);
+            }
         }
 
         // Apply DISTINCT on evaluated results

@@ -193,6 +193,17 @@ pub const Expr = union(enum) {
         subquery_sql: []const u8,
         negated: bool = false, // NOT EXISTS
     },
+    window_func: struct {
+        func: WindowFunc,
+        partition_by: []const []const u8, // PARTITION BY columns (empty if none)
+        order_by: []const OrderByItem, // ORDER BY items in OVER clause
+    },
+};
+
+pub const WindowFunc = enum {
+    row_number,
+    rank,
+    dense_rank,
 };
 
 pub const CastType = enum {
@@ -1520,6 +1531,61 @@ pub const Parser = struct {
             return self.allocExpr(.{ .cast = .{ .operand = operand, .target_type = target_type } });
         }
 
+        // Window function: ROW_NUMBER() OVER (...), RANK() OVER (...), DENSE_RANK() OVER (...)
+        if (tok.type == .identifier and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
+            if (classifyWindowFunc(tok.lexeme)) |wfunc| {
+                _ = self.advance(); // consume function name
+                _ = self.advance(); // consume '('
+                _ = try self.expect(.rparen); // window funcs take no args
+                _ = try self.expect(.kw_over);
+                _ = try self.expect(.lparen);
+                // Parse optional PARTITION BY
+                var partition_by: std.ArrayList([]const u8) = .{};
+                if (self.peek().type == .kw_partition) {
+                    _ = self.advance(); // consume PARTITION
+                    _ = try self.expect(.kw_by);
+                    while (true) {
+                        const col_tok = try self.expect(.identifier);
+                        partition_by.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                        if (self.peek().type == .comma) {
+                            _ = self.advance();
+                        } else break;
+                    }
+                }
+                // Parse optional ORDER BY
+                var order_items: std.ArrayList(OrderByItem) = .{};
+                if (self.peek().type == .kw_order) {
+                    _ = self.advance();
+                    _ = try self.expect(.kw_by);
+                    while (true) {
+                        const ob_expr = try self.parseExpr();
+                        const ob_col: []const u8 = if (ob_expr.* == .column_ref) ob_expr.column_ref else "";
+                        var ob_order: SortOrder = .asc;
+                        if (self.peek().type == .kw_asc) {
+                            _ = self.advance();
+                        } else if (self.peek().type == .kw_desc) {
+                            _ = self.advance();
+                            ob_order = .desc;
+                        }
+                        const ob_expr_val: ?*const Expr = if (ob_col.len == 0) ob_expr else blk: {
+                            self.allocator.destroy(@constCast(ob_expr));
+                            break :blk null;
+                        };
+                        order_items.append(self.allocator, .{ .column = ob_col, .order = ob_order, .expr = ob_expr_val }) catch return ParseError.OutOfMemory;
+                        if (self.peek().type == .comma) {
+                            _ = self.advance();
+                        } else break;
+                    }
+                }
+                _ = try self.expect(.rparen);
+                return self.allocExpr(.{ .window_func = .{
+                    .func = wfunc,
+                    .partition_by = partition_by.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .order_by = order_items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                } });
+            }
+        }
+
         // Scalar function call: identifier followed by '('
         if (tok.type == .identifier and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
             if (classifyScalarFunc(tok.lexeme)) |func| {
@@ -1627,6 +1693,13 @@ pub const Parser = struct {
             .cast => |c| {
                 freeExpr(allocator, c.operand);
             },
+            .window_func => |wf| {
+                allocator.free(wf.partition_by);
+                for (wf.order_by) |item| {
+                    if (item.expr) |e| freeExpr(allocator, e);
+                }
+                allocator.free(wf.order_by);
+            },
             else => {},
         }
         allocator.destroy(@constCast(expr));
@@ -1672,6 +1745,20 @@ pub const Parser = struct {
             .{ "TIME", ScalarFunc.time_fn },
             .{ "DATETIME", ScalarFunc.datetime_fn },
             .{ "STRFTIME", ScalarFunc.strftime_fn },
+        };
+        inline for (funcs) |entry| {
+            if (std.ascii.eqlIgnoreCase(name, entry[0])) {
+                return entry[1];
+            }
+        }
+        return null;
+    }
+
+    fn classifyWindowFunc(name: []const u8) ?WindowFunc {
+        const funcs = .{
+            .{ "ROW_NUMBER", WindowFunc.row_number },
+            .{ "RANK", WindowFunc.rank },
+            .{ "DENSE_RANK", WindowFunc.dense_rank },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {
