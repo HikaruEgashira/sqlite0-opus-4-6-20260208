@@ -114,6 +114,20 @@
 - [x] 差分テスト追加: float format, SUBSTR負数, GROUP BY式, NULL処理, 型変換, 空テーブル, ネスト関数, CASE式, JOIN集約, LIMIT集約, BETWEEN, 文字列操作
 - Differential Test: **140/140 passing**
 
+### Phase 6d-13: SQL機能充実（進行中）
+- [x] CREATE VIEW / DROP VIEW（IF NOT EXISTS, IF EXISTS対応）
+- [x] ビューのマテリアライズ（temp_cte_namesパターンでクリーンアップ）
+- [x] FROM句のサブクエリ（導出テーブル）: SELECT * FROM (SELECT ...) alias
+- [x] 集約クエリの projected_column_names 設定修正
+- [x] FOREIGN KEY / REFERENCES 構文（パース対応）
+- [x] UNIQUE制約構文（カラム・テーブルレベル）
+- [x] 複合PRIMARY KEY構文（テーブルレベル）
+- [x] テーブルレベルCHECK/FOREIGN KEY/UNIQUE/PRIMARY KEY制約パース
+- [x] UNIQUE制約のINSERT時検証（INSERT OR IGNOREも対応）
+- [x] 拡張カラム型サポート（VARCHAR, INT, BOOLEAN, BLOB, DECIMAL等）
+- [x] .tables / .schema / .quit REPLコマンド
+- Differential Test: **145/145 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）

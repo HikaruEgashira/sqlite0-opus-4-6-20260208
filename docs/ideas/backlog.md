@@ -66,7 +66,7 @@
 - ~~NATURAL JOIN~~ ✓
 - ~~CREATE TABLE AS SELECT~~ ✓
 - ~~<>演算子~~ ✓
-- 外部キー (FOREIGN KEY)
+- ~~外部キー (FOREIGN KEY)~~ ✓ (構文パース対応)
 - ~~PARTITION BY (Window関数)~~ ✓
 - ~~SUM/AVG OVER (Window集約)~~ ✓
 - GENERATED COLUMNS
@@ -82,6 +82,10 @@
 - ~~GROUP BY式サポート~~ ✓
 - ~~JOIN結果の集約関数~~ ✓
 - ~~LIMIT/OFFSETの集約クエリ対応~~ ✓
+- ~~CREATE VIEW / DROP VIEW~~ ✓
+- ~~FROM句サブクエリ（導出テーブル）~~ ✓
+- ~~UNIQUE制約構文~~ ✓
+- ~~複合PRIMARY KEY~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
@@ -97,8 +101,9 @@
 
 ## 開発体験
 - エラーメッセージの改善
-- .schema コマンド
-- .tables コマンド
+- ~~.schema コマンド~~ ✓
+- ~~.tables コマンド~~ ✓
+- .quit / .exit コマンド ✓
 - EXPLAIN 相当の機能
 
 ## 将来構想
