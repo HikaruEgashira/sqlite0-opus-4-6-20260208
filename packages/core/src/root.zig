@@ -187,6 +187,7 @@ pub const Database = struct {
                     .name = try dupeStr(self.allocator, col.name),
                     .col_type = col.col_type,
                     .is_primary_key = col.is_primary_key,
+                    .is_unique = col.is_unique,
                 };
             }
             // Deep copy rows
@@ -232,6 +233,7 @@ pub const Database = struct {
                     .name = try dupeStr(self.allocator, col.name),
                     .col_type = col.col_type,
                     .is_primary_key = col.is_primary_key,
+                    .is_unique = col.is_unique,
                 };
             }
             var table = Table.init(self.allocator, table_name, cols);
@@ -1921,6 +1923,23 @@ pub const Database = struct {
                 for (table.storage().scan()) |row| {
                     if (pidx < row.values.len) {
                         if (self.valuesEqualUnion(row.values[pidx], pk_val)) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Check if a row with matching UNIQUE column already exists
+    fn hasUniqueConflict(self: *Database, table: *Table, raw_values: []const []const u8) bool {
+        for (table.columns, 0..) |col, i| {
+            if (col.is_unique and i < raw_values.len) {
+                const new_val: Value = if (std.mem.eql(u8, raw_values[i], "NULL")) .null_val else Table.parseRawValue(raw_values[i]);
+                // NULL values don't conflict with each other in UNIQUE
+                if (new_val == .null_val) continue;
+                for (table.storage().scan()) |row| {
+                    if (i < row.values.len) {
+                        if (self.valuesEqualUnion(row.values[i], new_val)) return true;
                     }
                 }
             }
@@ -4181,6 +4200,7 @@ pub const Database = struct {
                         .default_value = col.default_value,
                         .not_null = col.not_null,
                         .autoincrement = col.autoincrement,
+                        .is_unique = col.is_unique,
                         .check_expr_sql = col.check_expr_sql,
                     };
                 }
@@ -4251,10 +4271,13 @@ pub const Database = struct {
                     } else if (ins.replace_mode) {
                         self.replaceRow(table, values);
                     } else if (ins.ignore_mode) {
-                        if (!self.hasPkConflict(table, values)) {
+                        if (!self.hasPkConflict(table, values) and !self.hasUniqueConflict(table, values)) {
                             try table.insertRow(values);
                         }
                     } else {
+                        if (self.hasUniqueConflict(table, values)) {
+                            return .{ .err = "UNIQUE constraint failed" };
+                        }
                         try table.insertRow(values);
                     }
                     for (ins.extra_rows) |row_values| {
@@ -4271,10 +4294,13 @@ pub const Database = struct {
                         } else if (ins.replace_mode) {
                             self.replaceRow(table, expanded);
                         } else if (ins.ignore_mode) {
-                            if (!self.hasPkConflict(table, expanded)) {
+                            if (!self.hasPkConflict(table, expanded) and !self.hasUniqueConflict(table, expanded)) {
                                 try table.insertRow(expanded);
                             }
                         } else {
+                            if (self.hasUniqueConflict(table, expanded)) {
+                                return .{ .err = "UNIQUE constraint failed" };
+                            }
                             try table.insertRow(expanded);
                         }
                     }

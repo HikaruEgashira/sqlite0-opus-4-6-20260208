@@ -17,6 +17,7 @@ pub const Column = struct {
     default_value: ?[]const u8 = null,
     not_null: bool = false,
     autoincrement: bool = false,
+    is_unique: bool = false,
     check_expr_sql: ?[]const u8 = null,
 };
 

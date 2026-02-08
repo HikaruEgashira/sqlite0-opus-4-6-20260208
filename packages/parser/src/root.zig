@@ -12,6 +12,7 @@ pub const ColumnDef = struct {
     default_value: ?[]const u8 = null,
     not_null: bool = false,
     autoincrement: bool = false,
+    is_unique: bool = false,
     check_expr_sql: ?[]const u8 = null,
 };
 
@@ -574,6 +575,7 @@ pub const Parser = struct {
             var default_val: ?[]const u8 = null;
             var not_null = false;
             var autoincrement = false;
+            var is_unique = false;
             var check_sql: ?[]const u8 = null;
             // Parse column constraints (PRIMARY KEY, NOT NULL, DEFAULT, AUTOINCREMENT, CHECK)
             while (true) {
@@ -619,7 +621,8 @@ pub const Parser = struct {
                     }
                     _ = try self.expect(.rparen);
                 } else if (self.peek().type == .kw_unique) {
-                    _ = self.advance(); // skip UNIQUE column constraint
+                    _ = self.advance();
+                    is_unique = true;
                 } else if (self.peek().type == .kw_references) {
                     // REFERENCES table(col) — parse and skip
                     _ = self.advance();
@@ -639,6 +642,7 @@ pub const Parser = struct {
                 .default_value = default_val,
                 .not_null = not_null,
                 .autoincrement = autoincrement,
+                .is_unique = is_unique,
                 .check_expr_sql = check_sql,
             }) catch return ParseError.OutOfMemory;
 
