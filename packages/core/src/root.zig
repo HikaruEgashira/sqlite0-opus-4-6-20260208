@@ -1441,26 +1441,6 @@ pub const Database = struct {
         const left_alias = sel.table_alias orelse sel.table_name;
         const right_alias = join.table_alias orelse join.table_name;
 
-        // Resolve join columns using alias mapping
-        // ON left_ref.col = right_ref.col - determine which ref maps to which table
-        var left_join_col: ?usize = null;
-        var right_join_col: ?usize = null;
-
-        if (std.mem.eql(u8, join.left_table, left_alias) or std.mem.eql(u8, join.left_table, sel.table_name)) {
-            left_join_col = left_table.findColumnIndex(join.left_column);
-            right_join_col = right_table.findColumnIndex(join.right_column);
-        } else if (std.mem.eql(u8, join.left_table, right_alias) or std.mem.eql(u8, join.left_table, join.table_name)) {
-            left_join_col = left_table.findColumnIndex(join.right_column);
-            right_join_col = right_table.findColumnIndex(join.left_column);
-        } else {
-            // Fallback: try both ways
-            left_join_col = left_table.findColumnIndex(join.left_column) orelse left_table.findColumnIndex(join.right_column);
-            right_join_col = right_table.findColumnIndex(join.right_column) orelse right_table.findColumnIndex(join.left_column);
-        }
-
-        const left_jc = left_join_col orelse return .{ .err = "join column not found" };
-        const right_jc = right_join_col orelse return .{ .err = "join column not found" };
-
         const left_col_count = left_table.columns.len;
         const right_col_count = right_table.columns.len;
         const total_cols = left_col_count + right_col_count;
@@ -1468,14 +1448,45 @@ pub const Database = struct {
         var joined_rows: std.ArrayList(Row) = .{};
         var joined_values: std.ArrayList([]Value) = .{};
 
-        // Nested loop join
         const left_rows = left_table.storage().scan();
         const right_rows = right_table.storage().scan();
-        for (left_rows) |left_row| {
-            var matched = false;
-            for (right_rows) |right_row| {
-                if (compareValuesOrder(left_row.values[left_jc], right_row.values[right_jc]) == .eq) {
-                    matched = true;
+
+        if (join.join_type == .cross) {
+            // CROSS JOIN: Cartesian product (no ON condition)
+            for (left_rows) |left_row| {
+                for (right_rows) |right_row| {
+                    var values = try self.allocator.alloc(Value, total_cols);
+                    @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
+                    @memcpy(values[left_col_count..total_cols], right_row.values[0..right_col_count]);
+                    try joined_values.append(self.allocator, values);
+                    try joined_rows.append(self.allocator, .{ .values = values });
+                }
+            }
+        } else {
+            // Resolve join columns using alias mapping
+            var left_join_col: ?usize = null;
+            var right_join_col: ?usize = null;
+
+            if (std.mem.eql(u8, join.left_table, left_alias) or std.mem.eql(u8, join.left_table, sel.table_name)) {
+                left_join_col = left_table.findColumnIndex(join.left_column);
+                right_join_col = right_table.findColumnIndex(join.right_column);
+            } else if (std.mem.eql(u8, join.left_table, right_alias) or std.mem.eql(u8, join.left_table, join.table_name)) {
+                left_join_col = left_table.findColumnIndex(join.right_column);
+                right_join_col = right_table.findColumnIndex(join.left_column);
+            } else {
+                left_join_col = left_table.findColumnIndex(join.left_column) orelse left_table.findColumnIndex(join.right_column);
+                right_join_col = right_table.findColumnIndex(join.right_column) orelse right_table.findColumnIndex(join.left_column);
+            }
+
+            const left_jc = left_join_col orelse return .{ .err = "join column not found" };
+            const right_jc = right_join_col orelse return .{ .err = "join column not found" };
+
+            // Nested loop join
+            for (left_rows) |left_row| {
+                var matched = false;
+                for (right_rows) |right_row| {
+                    if (compareValuesOrder(left_row.values[left_jc], right_row.values[right_jc]) == .eq) {
+                        matched = true;
                     var values = try self.allocator.alloc(Value, total_cols);
                     @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
                     @memcpy(values[left_col_count..total_cols], right_row.values[0..right_col_count]);
@@ -1494,6 +1505,7 @@ pub const Database = struct {
                 try joined_rows.append(self.allocator, .{ .values = values });
             }
         }
+        } // end else (non-cross join)
 
         // Apply WHERE filter on joined rows
         if (sel.where) |where| {
@@ -1523,6 +1535,27 @@ pub const Database = struct {
                         _ = joined_rows.orderedRemove(i);
                         _ = joined_values.orderedRemove(i);
                     }
+                }
+            }
+        }
+        // Apply WHERE filter using where_expr (for CROSS JOIN and expression-based WHERE)
+        if (sel.where_expr) |we| {
+            // Build a temporary combined-column Table for evalExpr
+            var combined_cols = try self.allocator.alloc(Column, total_cols);
+            defer self.allocator.free(combined_cols);
+            @memcpy(combined_cols[0..left_col_count], left_table.columns);
+            @memcpy(combined_cols[left_col_count..total_cols], right_table.columns);
+            var tmp_table = Table.init(self.allocator, "joined", combined_cols);
+            // Filter joined rows using evalExpr
+            var i: usize = joined_rows.items.len;
+            while (i > 0) {
+                i -= 1;
+                const val = try self.evalExpr(we, &tmp_table, joined_rows.items[i]);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (!self.valueToBool(val)) {
+                    self.allocator.free(joined_values.items[i]);
+                    _ = joined_rows.orderedRemove(i);
+                    _ = joined_values.orderedRemove(i);
                 }
             }
         }

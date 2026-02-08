@@ -196,6 +196,7 @@ pub const SetOp = enum {
 pub const JoinType = enum {
     inner,
     left,
+    cross,
 };
 
 pub const JoinClause = struct {
@@ -710,18 +711,40 @@ pub const Parser = struct {
             };
         }
 
-        // Parse optional JOIN
-        const join = if (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join)
-            try self.parseJoinClause()
-        else
-            null;
+        // Parse optional JOIN (including comma syntax: FROM t1, t2 = CROSS JOIN)
+        var join: ?JoinClause = null;
+        if (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join or self.peek().type == .kw_cross) {
+            join = try self.parseJoinClause();
+        } else if (self.peek().type == .comma) {
+            // FROM t1, t2 syntax = implicit CROSS JOIN
+            _ = self.advance(); // consume comma
+            const join_table_tok = try self.expect(.identifier);
+            var comma_alias: ?[]const u8 = null;
+            if (self.peek().type == .kw_as) {
+                _ = self.advance();
+                const alias_tok = try self.expect(.identifier);
+                comma_alias = alias_tok.lexeme;
+            } else if (self.peek().type == .identifier) {
+                comma_alias = self.advance().lexeme;
+            }
+            join = .{
+                .join_type = .cross,
+                .table_name = join_table_tok.lexeme,
+                .table_alias = comma_alias,
+                .left_table = "",
+                .left_column = "",
+                .right_table = "",
+                .right_column = "",
+            };
+        }
 
-        // Parse WHERE clause: use Expr-based parsing (Phase 6c)
-        // JOINありの場合は旧WhereClauseを使う（テーブル修飾の解決が必要なため）
+        // Parse WHERE clause: use Expr-based parsing
+        // INNER/LEFT JOIN uses old WhereClause for table-qualified resolution
+        // CROSS JOIN and non-JOIN use parseWhereExpr
         var where: ?WhereClause = null;
         var where_expr: ?*const Expr = null;
         if (self.peek().type == .kw_where) {
-            if (join != null) {
+            if (join != null and join.?.join_type != .cross) {
                 where = try self.parseWhereClause();
             } else {
                 _ = self.advance(); // consume WHERE
@@ -827,7 +850,7 @@ pub const Parser = struct {
     }
 
     fn parseJoinClause(self: *Parser) ParseError!JoinClause {
-        // Parse: [INNER|LEFT] JOIN table [AS alias] ON t1.col = t2.col
+        // Parse: [INNER|LEFT|CROSS] JOIN table [AS alias] [ON t1.col = t2.col]
         var join_type: JoinType = .inner;
         if (self.peek().type == .kw_inner) {
             _ = self.advance();
@@ -835,6 +858,9 @@ pub const Parser = struct {
         } else if (self.peek().type == .kw_left) {
             _ = self.advance();
             join_type = .left;
+        } else if (self.peek().type == .kw_cross) {
+            _ = self.advance();
+            join_type = .cross;
         }
         _ = try self.expect(.kw_join);
         const join_table = try self.expect(.identifier);
@@ -847,6 +873,19 @@ pub const Parser = struct {
             join_alias = alias_tok.lexeme;
         } else if (self.peek().type == .identifier and self.peek().type != .kw_on) {
             join_alias = self.advance().lexeme;
+        }
+
+        // CROSS JOIN has no ON clause
+        if (join_type == .cross) {
+            return .{
+                .join_type = .cross,
+                .table_name = join_table.lexeme,
+                .table_alias = join_alias,
+                .left_table = "",
+                .left_column = "",
+                .right_table = "",
+                .right_column = "",
+            };
         }
 
         _ = try self.expect(.kw_on);
