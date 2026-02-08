@@ -3395,6 +3395,16 @@ pub const Database = struct {
                     if (ins.select_sql) |select_sql| {
                         return self.executeInsertSelect(table, select_sql);
                     }
+                    if (ins.default_values) {
+                        // INSERT INTO t DEFAULT VALUES: use defaults for all columns
+                        var def_values = try self.allocator.alloc([]const u8, table.columns.len);
+                        defer self.allocator.free(def_values);
+                        for (table.columns, 0..) |col, i| {
+                            def_values[i] = col.default_value orelse "NULL";
+                        }
+                        try table.insertRow(def_values);
+                        return .ok;
+                    }
                     // Expand partial column lists with default values
                     const values = if (ins.column_names.len > 0)
                         self.expandInsertValues(table, ins.column_names, ins.values) catch ins.values

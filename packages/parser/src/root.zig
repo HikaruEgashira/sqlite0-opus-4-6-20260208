@@ -302,6 +302,7 @@ pub const Statement = union(enum) {
         ignore_mode: bool = false, // INSERT OR IGNORE behavior
         column_names: []const []const u8 = &.{}, // explicit column list (empty = all)
         on_conflict: ?OnConflict = null, // ON CONFLICT clause (UPSERT)
+        default_values: bool = false, // INSERT INTO t DEFAULT VALUES
     };
 
     pub const Select = struct {
@@ -639,6 +640,21 @@ pub const Parser = struct {
                 } else break;
             }
             _ = try self.expect(.rparen);
+        }
+
+        // INSERT INTO ... DEFAULT VALUES
+        if (self.peek().type == .kw_default and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .kw_values) {
+            _ = self.advance(); // consume DEFAULT
+            _ = self.advance(); // consume VALUES
+            _ = try self.expect(.semicolon);
+            return Statement{
+                .insert = .{
+                    .table_name = name_tok.lexeme,
+                    .values = &.{},
+                    .extra_rows = &.{},
+                    .default_values = true,
+                },
+            };
         }
 
         // INSERT INTO ... SELECT or INSERT INTO ... VALUES
