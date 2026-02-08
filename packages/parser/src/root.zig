@@ -378,11 +378,13 @@ pub const Statement = union(enum) {
     pub const CteDef = struct {
         name: []const u8,
         query_sql: []const u8, // raw SQL for the CTE query
+        col_names: ?[]const []const u8 = null, // optional column names
     };
 
     pub const WithCTE = struct {
         ctes: []const CteDef,
         main_sql: []const u8, // raw SQL for the main statement after CTEs
+        is_recursive: bool = false,
     };
 
     pub const AlterTable = union(enum) {
@@ -2321,10 +2323,31 @@ pub const Parser = struct {
 
     fn parseWith(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_with);
+        // Check for RECURSIVE keyword (contextual - not a tokenizer keyword)
+        var is_recursive = false;
+        if (self.peek().type == .identifier and isIdentEql(self.peek(), "RECURSIVE")) {
+            _ = self.advance();
+            is_recursive = true;
+        }
         var ctes: std.ArrayList(Statement.CteDef) = .{};
 
         while (true) {
             const name_tok = try self.expectAlias();
+            // Parse optional column list: name(col1, col2, ...)
+            var col_names: ?[]const []const u8 = null;
+            if (self.peek().type == .lparen) {
+                _ = self.advance(); // consume '('
+                var cols: std.ArrayList([]const u8) = .{};
+                while (true) {
+                    const col_tok = try self.expectAlias();
+                    cols.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                    if (self.peek().type == .comma) {
+                        _ = self.advance();
+                    } else break;
+                }
+                _ = try self.expect(.rparen);
+                col_names = cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+            }
             _ = try self.expect(.kw_as);
             _ = try self.expect(.lparen);
 
@@ -2352,6 +2375,7 @@ pub const Parser = struct {
             ctes.append(self.allocator, .{
                 .name = name_tok.lexeme,
                 .query_sql = buf[0 .. sql_len + 1],
+                .col_names = col_names,
             }) catch return ParseError.OutOfMemory;
 
             // Check for comma (more CTEs) or move to main statement
@@ -2381,6 +2405,7 @@ pub const Parser = struct {
         return Statement{ .with_cte = .{
             .ctes = ctes.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             .main_sql = main_buf[0 .. main_len + 1],
+            .is_recursive = is_recursive,
         } };
     }
 
