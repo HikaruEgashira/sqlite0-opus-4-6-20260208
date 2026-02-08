@@ -743,7 +743,7 @@ pub const Database = struct {
         }
     }
 
-    fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row) !Value {
+    fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row, separator: []const u8) !Value {
         if (func == .count) {
             if (std.mem.eql(u8, arg, "*")) {
                 return .{ .integer = @intCast(rows.len) };
@@ -825,6 +825,25 @@ pub const Database = struct {
                 }
                 return max_val;
             },
+            .group_concat => {
+                var result: std.ArrayList(u8) = .{};
+                var first = true;
+                for (rows) |row| {
+                    if (row.values[col_idx] == .null_val) continue;
+                    if (!first) {
+                        result.appendSlice(self.allocator, separator) catch return .null_val;
+                    }
+                    const text = self.valueToText(row.values[col_idx]);
+                    result.appendSlice(self.allocator, text) catch {
+                        self.allocator.free(text);
+                        return .null_val;
+                    };
+                    self.allocator.free(text);
+                    first = false;
+                }
+                if (first) return .null_val; // all NULL
+                return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+            },
             else => return .null_val,
         }
     }
@@ -860,7 +879,7 @@ pub const Database = struct {
         for (sel.select_exprs, 0..) |expr, i| {
             switch (expr) {
                 .aggregate => |agg| {
-                    values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows);
+                    values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows, agg.separator);
                 },
                 .column => |col_name| {
                     const col_idx = tbl.findColumnIndex(col_name) orelse return .{ .err = "column not found" };
@@ -872,7 +891,7 @@ pub const Database = struct {
                 },
                 .expr => |e| {
                     if (parser.Parser.exprAsAggregate(e)) |agg| {
-                        values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows);
+                        values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows, agg.separator);
                     } else if (rows.len > 0) {
                         values[i] = try self.evalExpr(e, tbl, rows[0]);
                     } else {
@@ -934,7 +953,7 @@ pub const Database = struct {
             for (sel.select_exprs, 0..) |expr, ei| {
                 switch (expr) {
                     .aggregate => |agg| {
-                        values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp);
+                        values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator);
                     },
                     .column => |col_name| {
                         const col_idx = tbl.findColumnIndex(col_name) orelse return .{ .err = "column not found" };
@@ -942,7 +961,7 @@ pub const Database = struct {
                     },
                     .expr => |e| {
                         if (parser.Parser.exprAsAggregate(e)) |agg| {
-                            values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp);
+                            values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator);
                         } else if (grp.len > 0) {
                             values[ei] = try self.evalExpr(e, tbl, grp[0]);
                         } else {

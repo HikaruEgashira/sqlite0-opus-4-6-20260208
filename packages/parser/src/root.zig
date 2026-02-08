@@ -68,6 +68,7 @@ pub const AggFunc = enum {
     avg,
     min,
     max,
+    group_concat,
 };
 
 pub const BinOp = enum {
@@ -126,6 +127,7 @@ pub const Expr = union(enum) {
     aggregate: struct {
         func: AggFunc,
         arg: *const Expr, // inner expression (column_ref or star)
+        separator: []const u8 = ",", // for GROUP_CONCAT
     },
     case_when: struct {
         conditions: []const *const Expr,  // WHEN conditions
@@ -163,6 +165,7 @@ pub const SelectExpr = union(enum) {
     aggregate: struct {
         func: AggFunc,
         arg: []const u8, // column name or "*"
+        separator: []const u8 = ",", // for GROUP_CONCAT
     },
     expr: *const Expr,
 };
@@ -597,7 +600,7 @@ pub const Parser = struct {
 
                 // Also populate legacy columns/select_exprs for backward compat
                 if (exprAsAggregate(expr)) |agg| {
-                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = agg.func, .arg = agg.arg } }) catch return ParseError.OutOfMemory;
+                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = agg.func, .arg = agg.arg, .separator = agg.separator } }) catch return ParseError.OutOfMemory;
                 } else if (exprAsColumnName(expr)) |name| {
                     columns.append(self.allocator, name) catch return ParseError.OutOfMemory;
                     select_exprs.append(self.allocator, .{ .column = name }) catch return ParseError.OutOfMemory;
@@ -1174,6 +1177,23 @@ pub const Parser = struct {
             } });
         }
 
+        // GROUP_CONCAT(expr) or GROUP_CONCAT(expr, separator)
+        if (tok.type == .identifier and std.ascii.eqlIgnoreCase(tok.lexeme, "GROUP_CONCAT") and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
+            _ = self.advance(); // consume GROUP_CONCAT
+            _ = self.advance(); // consume '('
+            const arg_expr = try self.parseExpr();
+            var separator: []const u8 = ",";
+            if (self.peek().type == .comma) {
+                _ = self.advance();
+                const sep_tok = self.advance();
+                if (sep_tok.type == .string_literal) {
+                    separator = sep_tok.lexeme[1 .. sep_tok.lexeme.len - 1]; // strip quotes
+                }
+            }
+            _ = try self.expect(.rparen);
+            return self.allocExpr(.{ .aggregate = .{ .func = .group_concat, .arg = arg_expr, .separator = separator } });
+        }
+
         // CAST(expr AS type) expression
         if (tok.type == .identifier and std.ascii.eqlIgnoreCase(tok.lexeme, "CAST") and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
             _ = self.advance(); // consume CAST
@@ -1236,7 +1256,7 @@ pub const Parser = struct {
     }
 
     /// Helper: check if Expr is a simple aggregate and extract func/arg
-    pub fn exprAsAggregate(expr: *const Expr) ?struct { func: AggFunc, arg: []const u8 } {
+    pub fn exprAsAggregate(expr: *const Expr) ?struct { func: AggFunc, arg: []const u8, separator: []const u8 } {
         return switch (expr.*) {
             .aggregate => |agg| {
                 const arg_name: []const u8 = switch (agg.arg.*) {
@@ -1244,7 +1264,7 @@ pub const Parser = struct {
                     .star => "*",
                     else => return null,
                 };
-                return .{ .func = agg.func, .arg = arg_name };
+                return .{ .func = agg.func, .arg = arg_name, .separator = agg.separator };
             },
             else => null,
         };
