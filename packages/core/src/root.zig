@@ -793,22 +793,41 @@ pub const Database = struct {
                     self.allocator.free(text);
                     return .null_val;
                 };
-                // SQLite SUBSTR is 1-based; negative means from end
+                // SQLite SUBSTR: 1-based positions, negative means from end
+                // Negative length means chars before the position
                 const text_len: i64 = @intCast(text.len);
-                var start: i64 = if (start_raw > 0) start_raw - 1 else if (start_raw < 0) text_len + start_raw else 0;
-                if (start < 0) start = 0;
-                var length: i64 = text_len - start;
+                // Convert negative start: -N means Nth from end (1-based)
+                const y: i64 = if (start_raw < 0) text_len + start_raw + 1 else start_raw;
+                // Default length: rest of string from y
+                var z: i64 = text_len - y + 1;
                 if (args.len == 3) {
                     const len_val = try self.evalExpr(args[2], tbl, row);
                     defer if (len_val == .text) self.allocator.free(len_val.text);
-                    length = self.valueToI64(len_val) orelse {
+                    z = self.valueToI64(len_val) orelse {
                         self.allocator.free(text);
                         return .null_val;
                     };
-                    if (length < 0) length = 0;
                 }
-                const s: usize = @intCast(@min(start, text_len));
-                const e: usize = @intCast(@min(start + length, text_len));
+                // Compute range [r_start, r_end) in 1-based coords
+                var r_start: i64 = undefined;
+                var r_end: i64 = undefined;
+                if (z >= 0) {
+                    r_start = y;
+                    r_end = y + z;
+                } else {
+                    r_start = y + z;
+                    r_end = y;
+                }
+                // Clamp to valid range [1, text_len+1)
+                if (r_start < 1) r_start = 1;
+                if (r_end > text_len + 1) r_end = text_len + 1;
+                if (r_start >= r_end) {
+                    self.allocator.free(text);
+                    return .{ .text = try dupeStr(self.allocator, "") };
+                }
+                // Convert to 0-based
+                const s: usize = @intCast(r_start - 1);
+                const e: usize = @intCast(r_end - 1);
                 const result = dupeStr(self.allocator, text[s..e]) catch return .null_val;
                 self.allocator.free(text);
                 return .{ .text = result };
