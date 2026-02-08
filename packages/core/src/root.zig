@@ -3354,6 +3354,36 @@ pub const Database = struct {
 
         const result_rows = joined_rows.items;
 
+        // Check for aggregates in JOIN results
+        const has_agg = blk: {
+            for (sel.select_exprs) |se| {
+                switch (se) {
+                    .aggregate => break :blk true,
+                    .expr => |e| {
+                        if (parser.Parser.exprAsAggregate(e) != null) break :blk true;
+                    },
+                    else => {},
+                }
+            }
+            break :blk false;
+        };
+        if (has_agg or sel.group_by != null) {
+            // Build a temporary combined table for aggregate evaluation
+            const combined_cols = try self.allocator.alloc(Column, combined_cols_list.items.len);
+            @memcpy(combined_cols, combined_cols_list.items);
+            var tmp_table = Table.init(self.allocator, "joined", combined_cols);
+            // Register alias column offsets for qualified refs
+            for (alias_offsets.items) |ao| {
+                _ = ao;
+            }
+            const agg_result = try self.executeAggregate(&tmp_table, sel, result_rows);
+            self.allocator.free(combined_cols);
+            for (joined_values.items) |v| self.allocator.free(v);
+            joined_values.deinit(self.allocator);
+            joined_rows.deinit(self.allocator);
+            return agg_result;
+        }
+
         // SELECT * for JOIN
         if (sel.columns.len == 0 and sel.select_exprs.len == 0) {
             const proj_rows = try self.allocator.alloc(Row, result_rows.len);
