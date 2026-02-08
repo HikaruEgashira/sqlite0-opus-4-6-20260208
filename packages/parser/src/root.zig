@@ -164,6 +164,10 @@ pub const Expr = union(enum) {
         operand: *const Expr,
         target_type: CastType,
     },
+    qualified_ref: struct {
+        table: []const u8, // table name or alias
+        column: []const u8, // column name
+    },
 };
 
 pub const CastType = enum {
@@ -197,6 +201,7 @@ pub const JoinType = enum {
 pub const JoinClause = struct {
     join_type: JoinType,
     table_name: []const u8,
+    table_alias: ?[]const u8 = null, // JOIN table alias
     left_table: []const u8,
     left_column: []const u8,
     right_table: []const u8,
@@ -241,6 +246,7 @@ pub const Statement = union(enum) {
 
     pub const Select = struct {
         table_name: []const u8,
+        table_alias: ?[]const u8 = null, // FROM table alias
         columns: []const []const u8, // empty = * (plain column names for backward compat)
         select_exprs: []const SelectExpr, // full expression list (includes aggregates)
         result_exprs: []const *const Expr, // parsed expression ASTs for each SELECT item
@@ -653,10 +659,20 @@ pub const Parser = struct {
 
         // FROM is optional for table-less SELECT (e.g., SELECT ABS(-10);)
         var table_name: []const u8 = "";
+        var table_alias: ?[]const u8 = null;
         if (self.peek().type == .kw_from) {
             _ = self.advance();
             const table_tok = try self.expect(.identifier);
             table_name = table_tok.lexeme;
+            // Parse optional alias: AS alias or bare alias
+            if (self.peek().type == .kw_as) {
+                _ = self.advance();
+                const alias_tok = try self.expect(.identifier);
+                table_alias = alias_tok.lexeme;
+            } else if (self.peek().type == .identifier) {
+                // Bare alias (not a keyword)
+                table_alias = self.advance().lexeme;
+            }
         }
 
         // If no FROM clause, skip directly to possible semicolon/set-op
@@ -792,6 +808,7 @@ pub const Parser = struct {
         return Statement{
             .select_stmt = .{
                 .table_name = table_name,
+                .table_alias = table_alias,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
@@ -810,7 +827,7 @@ pub const Parser = struct {
     }
 
     fn parseJoinClause(self: *Parser) ParseError!JoinClause {
-        // Parse: [INNER|LEFT] JOIN table ON t1.col = t2.col
+        // Parse: [INNER|LEFT] JOIN table [AS alias] ON t1.col = t2.col
         var join_type: JoinType = .inner;
         if (self.peek().type == .kw_inner) {
             _ = self.advance();
@@ -821,6 +838,16 @@ pub const Parser = struct {
         }
         _ = try self.expect(.kw_join);
         const join_table = try self.expect(.identifier);
+
+        // Parse optional alias for join table
+        var join_alias: ?[]const u8 = null;
+        if (self.peek().type == .kw_as) {
+            _ = self.advance();
+            const alias_tok = try self.expect(.identifier);
+            join_alias = alias_tok.lexeme;
+        } else if (self.peek().type == .identifier and self.peek().type != .kw_on) {
+            join_alias = self.advance().lexeme;
+        }
 
         _ = try self.expect(.kw_on);
         // Parse: t1.col = t2.col
@@ -835,6 +862,7 @@ pub const Parser = struct {
         return .{
             .join_type = join_type,
             .table_name = join_table.lexeme,
+            .table_alias = join_alias,
             .left_table = left_table.lexeme,
             .left_column = left_col.lexeme,
             .right_table = right_table.lexeme,
@@ -1320,9 +1348,15 @@ pub const Parser = struct {
             }
         }
 
-        // Identifier (column reference)
+        // Identifier (column reference), possibly table-qualified (t1.col)
         if (tok.type == .identifier) {
             _ = self.advance();
+            // Check for table-qualified reference: ident.ident
+            if (self.peek().type == .dot) {
+                _ = self.advance(); // consume dot
+                const col_tok = try self.expect(.identifier);
+                return self.allocExpr(.{ .qualified_ref = .{ .table = tok.lexeme, .column = col_tok.lexeme } });
+            }
             return self.allocExpr(.{ .column_ref = tok.lexeme });
         }
 
@@ -1333,6 +1367,7 @@ pub const Parser = struct {
     pub fn exprAsColumnName(expr: *const Expr) ?[]const u8 {
         return switch (expr.*) {
             .column_ref => |name| name,
+            .qualified_ref => |qr| qr.column,
             else => null,
         };
     }

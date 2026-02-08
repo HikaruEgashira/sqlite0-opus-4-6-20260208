@@ -205,6 +205,12 @@ pub const Database = struct {
                 // Deep copy text values so caller can free them uniformly
                 return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
             },
+            .qualified_ref => |qr| {
+                // For non-JOIN context, just use the column name
+                const col_idx = tbl.findColumnIndex(qr.column) orelse return .null_val;
+                const val = row.values[col_idx];
+                return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+            },
             .binary_op => |bin| {
                 // AND/OR: short-circuit evaluation
                 if (bin.op == .logical_and) {
@@ -1431,11 +1437,29 @@ pub const Database = struct {
         const left_table = self.tables.get(sel.table_name) orelse return .{ .err = "table not found" };
         const right_table = self.tables.get(join.table_name) orelse return .{ .err = "table not found" };
 
-        // Resolve join column indices
-        const left_join_col = left_table.findColumnIndex(join.left_column) orelse
-            (if (left_table.findColumnIndex(join.right_column)) |idx| idx else return .{ .err = "join column not found" });
-        const right_join_col = right_table.findColumnIndex(join.right_column) orelse
-            (if (right_table.findColumnIndex(join.left_column)) |idx| idx else return .{ .err = "join column not found" });
+        // Build alias-to-table mapping for ON clause resolution
+        const left_alias = sel.table_alias orelse sel.table_name;
+        const right_alias = join.table_alias orelse join.table_name;
+
+        // Resolve join columns using alias mapping
+        // ON left_ref.col = right_ref.col - determine which ref maps to which table
+        var left_join_col: ?usize = null;
+        var right_join_col: ?usize = null;
+
+        if (std.mem.eql(u8, join.left_table, left_alias) or std.mem.eql(u8, join.left_table, sel.table_name)) {
+            left_join_col = left_table.findColumnIndex(join.left_column);
+            right_join_col = right_table.findColumnIndex(join.right_column);
+        } else if (std.mem.eql(u8, join.left_table, right_alias) or std.mem.eql(u8, join.left_table, join.table_name)) {
+            left_join_col = left_table.findColumnIndex(join.right_column);
+            right_join_col = right_table.findColumnIndex(join.left_column);
+        } else {
+            // Fallback: try both ways
+            left_join_col = left_table.findColumnIndex(join.left_column) orelse left_table.findColumnIndex(join.right_column);
+            right_join_col = right_table.findColumnIndex(join.right_column) orelse right_table.findColumnIndex(join.left_column);
+        }
+
+        const left_jc = left_join_col orelse return .{ .err = "join column not found" };
+        const right_jc = right_join_col orelse return .{ .err = "join column not found" };
 
         const left_col_count = left_table.columns.len;
         const right_col_count = right_table.columns.len;
@@ -1450,7 +1474,7 @@ pub const Database = struct {
         for (left_rows) |left_row| {
             var matched = false;
             for (right_rows) |right_row| {
-                if (compareValuesOrder(left_row.values[left_join_col], right_row.values[right_join_col]) == .eq) {
+                if (compareValuesOrder(left_row.values[left_jc], right_row.values[right_jc]) == .eq) {
                     matched = true;
                     var values = try self.allocator.alloc(Value, total_cols);
                     @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
@@ -1503,6 +1527,60 @@ pub const Database = struct {
             }
         }
 
+        // Apply ORDER BY for JOIN
+        if (sel.order_by) |order_by| {
+            // Resolve all ORDER BY columns to joined-row indices
+            var ob_indices = try self.allocator.alloc(usize, order_by.items.len);
+            defer self.allocator.free(ob_indices);
+            var ob_descs = try self.allocator.alloc(bool, order_by.items.len);
+            defer self.allocator.free(ob_descs);
+
+            for (order_by.items, 0..) |item, idx| {
+                ob_descs[idx] = item.order == .desc;
+                var col_idx: ?usize = null;
+
+                if (item.expr) |e| {
+                    switch (e.*) {
+                        .qualified_ref => |qr| {
+                            if (std.mem.eql(u8, qr.table, left_alias) or std.mem.eql(u8, qr.table, sel.table_name)) {
+                                col_idx = left_table.findColumnIndex(qr.column);
+                            } else if (std.mem.eql(u8, qr.table, right_alias) or std.mem.eql(u8, qr.table, join.table_name)) {
+                                if (right_table.findColumnIndex(qr.column)) |ri| col_idx = left_col_count + ri;
+                            }
+                        },
+                        .column_ref => |name| {
+                            col_idx = left_table.findColumnIndex(name);
+                            if (col_idx == null) {
+                                if (right_table.findColumnIndex(name)) |ri| col_idx = left_col_count + ri;
+                            }
+                        },
+                        else => {},
+                    }
+                } else if (item.column.len > 0) {
+                    col_idx = left_table.findColumnIndex(item.column);
+                    if (col_idx == null) {
+                        if (right_table.findColumnIndex(item.column)) |ri| col_idx = left_col_count + ri;
+                    }
+                }
+                ob_indices[idx] = col_idx orelse 0;
+            }
+
+            const JoinSortCtx = struct {
+                indices: []const usize,
+                descs: []const bool,
+                fn lessThan(ctx: @This(), a: Row, b: Row) bool {
+                    for (ctx.indices, ctx.descs) |ci, is_desc| {
+                        const cmp = compareValuesOrder(a.values[ci], b.values[ci]);
+                        if (cmp == .eq) continue;
+                        if (is_desc) return cmp == .gt;
+                        return cmp == .lt;
+                    }
+                    return false;
+                }
+            };
+            std.mem.sort(Row, joined_rows.items, JoinSortCtx{ .indices = ob_indices, .descs = ob_descs }, JoinSortCtx.lessThan);
+        }
+
         const result_rows = joined_rows.items;
 
         // SELECT * for JOIN
@@ -1518,16 +1596,38 @@ pub const Database = struct {
             return .{ .rows = proj_rows };
         }
 
-        // Column projection for JOIN
+        // Column projection for JOIN (with qualified_ref support)
         var col_indices = try self.allocator.alloc(usize, sel.columns.len);
         defer self.allocator.free(col_indices);
         for (sel.columns, 0..) |sel_col, i| {
             var found = false;
-            for (left_table.columns, 0..) |tbl_col, j| {
-                if (std.mem.eql(u8, sel_col, tbl_col.name)) {
-                    col_indices[i] = j;
-                    found = true;
-                    break;
+
+            // Check if this column has a qualified ref in result_exprs for disambiguation
+            if (i < sel.result_exprs.len) {
+                const expr = sel.result_exprs[i];
+                if (expr.* == .qualified_ref) {
+                    const qr = expr.qualified_ref;
+                    if (std.mem.eql(u8, qr.table, left_alias) or std.mem.eql(u8, qr.table, sel.table_name)) {
+                        if (left_table.findColumnIndex(qr.column)) |ci| {
+                            col_indices[i] = ci;
+                            found = true;
+                        }
+                    } else if (std.mem.eql(u8, qr.table, right_alias) or std.mem.eql(u8, qr.table, join.table_name)) {
+                        if (right_table.findColumnIndex(qr.column)) |ci| {
+                            col_indices[i] = left_col_count + ci;
+                            found = true;
+                        }
+                    }
+                }
+            }
+
+            if (!found) {
+                for (left_table.columns, 0..) |tbl_col, j| {
+                    if (std.mem.eql(u8, sel_col, tbl_col.name)) {
+                        col_indices[i] = j;
+                        found = true;
+                        break;
+                    }
                 }
             }
             if (!found) {
