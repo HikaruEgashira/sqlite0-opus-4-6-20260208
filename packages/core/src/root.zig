@@ -594,6 +594,18 @@ pub const Database = struct {
                     return .{ .integer = if (cmp_result) 1 else 0 };
                 }
 
+                if (bin.op == .concat) {
+                    if (left_val == .null_val or right_val == .null_val) return .null_val;
+                    const l = self.valueToText(left_val);
+                    defer self.allocator.free(l);
+                    const r = self.valueToText(right_val);
+                    defer self.allocator.free(r);
+                    const result = self.allocator.alloc(u8, l.len + r.len) catch return .null_val;
+                    @memcpy(result[0..l.len], l);
+                    @memcpy(result[l.len..], r);
+                    return .{ .text = result };
+                }
+
                 if (left_val == .null_val or right_val == .null_val) return .null_val;
 
                 switch (bin.op) {
@@ -637,6 +649,50 @@ pub const Database = struct {
                         } };
                     },
                     else => return .null_val,
+                }
+            },
+            .scalar_func => |sf| {
+                // Evaluate scalar function args via evalGroupExpr to handle nested aggregates
+                var resolved_args = self.allocator.alloc(Value, sf.args.len) catch return .null_val;
+                defer self.allocator.free(resolved_args);
+                var n_resolved: usize = 0;
+                defer {
+                    for (resolved_args[0..n_resolved]) |v| {
+                        if (v == .text) self.allocator.free(v.text);
+                    }
+                }
+                for (sf.args, 0..) |arg, i| {
+                    resolved_args[i] = try self.evalGroupExpr(arg, tbl, group_rows);
+                    n_resolved = i + 1;
+                }
+                // Evaluate scalar function with resolved values
+                return self.evalScalarFuncValues(sf.func, resolved_args[0..sf.args.len]);
+            },
+            .case_when => |cw| {
+                for (cw.conditions, 0..) |cond, i| {
+                    const cond_val = try self.evalGroupExpr(cond, tbl, group_rows);
+                    defer if (cond_val == .text) self.allocator.free(cond_val.text);
+                    if (self.valueToBool(cond_val)) {
+                        return self.evalGroupExpr(cw.results[i], tbl, group_rows);
+                    }
+                }
+                if (cw.else_result) |else_expr| {
+                    return self.evalGroupExpr(else_expr, tbl, group_rows);
+                }
+                return .null_val;
+            },
+            .unary_op => |un| {
+                const operand_val = try self.evalGroupExpr(un.operand, tbl, group_rows);
+                defer if (operand_val == .text) self.allocator.free(operand_val.text);
+                if (operand_val == .null_val) return .null_val;
+                switch (un.op) {
+                    .not => return .{ .integer = if (self.valueToBool(operand_val)) 0 else 1 },
+                    .bit_not => {
+                        const n = self.valueToI64(operand_val) orelse return .null_val;
+                        return .{ .integer = ~n };
+                    },
+                    .is_null => return .{ .integer = if (operand_val == .null_val) 1 else 0 },
+                    .is_not_null => return .{ .integer = if (operand_val != .null_val) 1 else 0 },
                 }
             },
             else => {
@@ -1224,6 +1280,243 @@ pub const Database = struct {
                 if (b == 0) return .null_val;
                 return self.formatFloat(@mod(a, b));
             },
+        }
+    }
+
+    /// Evaluate a scalar function with pre-resolved Value arguments.
+    /// Does NOT free the input values — caller is responsible for cleanup.
+    /// Returns a new Value (caller owns returned text).
+    fn evalScalarFuncValues(self: *Database, func: ScalarFunc, vals: []const Value) !Value {
+        switch (func) {
+            .abs => {
+                if (vals.len != 1) return .null_val;
+                const val = vals[0];
+                if (val == .null_val) return .null_val;
+                if (self.valueToI64(val)) |n| {
+                    return .{ .integer = if (n < 0) -n else n };
+                }
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@abs(f));
+            },
+            .round => {
+                if (vals.len == 0 or vals.len > 2) return .null_val;
+                const val = vals[0];
+                if (val == .null_val) return .null_val;
+                const float_val = self.valueToF64(val) orelse return .null_val;
+                var precision: i64 = 0;
+                if (vals.len == 2) {
+                    precision = self.valueToI64(vals[1]) orelse 0;
+                }
+                const factor = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(precision)));
+                const rounded = @round(float_val * factor) / factor;
+                return self.formatFloat(rounded);
+            },
+            .length => {
+                if (vals.len != 1) return .null_val;
+                const val = vals[0];
+                if (val == .null_val) return .null_val;
+                if (val == .text) return .{ .integer = @intCast(val.text.len) };
+                const text = self.valueToText(val);
+                defer self.allocator.free(text);
+                return .{ .integer = @intCast(text.len) };
+            },
+            .upper => {
+                if (vals.len != 1) return .null_val;
+                const val = vals[0];
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                var buf = try self.allocator.alloc(u8, text.len);
+                for (text, 0..) |ch, i| buf[i] = std.ascii.toUpper(ch);
+                self.allocator.free(text);
+                return .{ .text = buf };
+            },
+            .lower => {
+                if (vals.len != 1) return .null_val;
+                const val = vals[0];
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                var buf = try self.allocator.alloc(u8, text.len);
+                for (text, 0..) |ch, i| buf[i] = std.ascii.toLower(ch);
+                self.allocator.free(text);
+                return .{ .text = buf };
+            },
+            .coalesce => {
+                for (vals) |val| {
+                    if (val != .null_val) {
+                        // Duplicate the value since caller will free it
+                        if (val == .text) return .{ .text = try dupeStr(self.allocator, val.text) };
+                        return val;
+                    }
+                }
+                return .null_val;
+            },
+            .nullif => {
+                if (vals.len != 2) return .null_val;
+                if (compareValuesOrder(vals[0], vals[1]) == .eq) return .null_val;
+                if (vals[0] == .text) return .{ .text = try dupeStr(self.allocator, vals[0].text) };
+                return vals[0];
+            },
+            .iif => {
+                if (vals.len != 3) return .null_val;
+                const idx: usize = if (self.valueToBool(vals[0])) 1 else 2;
+                if (vals[idx] == .text) return .{ .text = try dupeStr(self.allocator, vals[idx].text) };
+                return vals[idx];
+            },
+            .ifnull => {
+                if (vals.len != 2) return .null_val;
+                const idx: usize = if (vals[0] != .null_val) 0 else 1;
+                if (vals[idx] == .text) return .{ .text = try dupeStr(self.allocator, vals[idx].text) };
+                return vals[idx];
+            },
+            .typeof_fn => {
+                if (vals.len != 1) return .null_val;
+                const type_name: []const u8 = switch (vals[0]) {
+                    .integer => "integer",
+                    .text => "text",
+                    .null_val => "null",
+                };
+                return .{ .text = try dupeStr(self.allocator, type_name) };
+            },
+            .sign => {
+                if (vals.len != 1) return .null_val;
+                const val = vals[0];
+                if (val == .null_val) return .null_val;
+                if (self.valueToI64(val)) |n| {
+                    return .{ .integer = if (n > 0) @as(i64, 1) else if (n < 0) @as(i64, -1) else 0 };
+                }
+                const f = self.valueToF64(val) orelse return .null_val;
+                return .{ .integer = if (f > 0) @as(i64, 1) else if (f < 0) @as(i64, -1) else 0 };
+            },
+            .max_fn => {
+                var best: ?Value = null;
+                for (vals) |val| {
+                    if (val == .null_val) continue;
+                    if (best == null or compareValuesOrder(val, best.?) == .gt) best = val;
+                }
+                if (best) |b| {
+                    if (b == .text) return .{ .text = try dupeStr(self.allocator, b.text) };
+                    return b;
+                }
+                return .null_val;
+            },
+            .min_fn => {
+                var best: ?Value = null;
+                for (vals) |val| {
+                    if (val == .null_val) continue;
+                    if (best == null or compareValuesOrder(val, best.?) == .lt) best = val;
+                }
+                if (best) |b| {
+                    if (b == .text) return .{ .text = try dupeStr(self.allocator, b.text) };
+                    return b;
+                }
+                return .null_val;
+            },
+            .trim => {
+                if (vals.len != 1) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                const text = self.valueToText(vals[0]);
+                const trimmed = std.mem.trim(u8, text, " ");
+                if (trimmed.len == text.len) return .{ .text = text };
+                const result = dupeStr(self.allocator, trimmed) catch { self.allocator.free(text); return .null_val; };
+                self.allocator.free(text);
+                return .{ .text = result };
+            },
+            .ltrim => {
+                if (vals.len == 0) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                const text = self.valueToText(vals[0]);
+                const trimmed = std.mem.trimLeft(u8, text, " ");
+                const result = dupeStr(self.allocator, trimmed) catch { self.allocator.free(text); return .null_val; };
+                self.allocator.free(text);
+                return .{ .text = result };
+            },
+            .rtrim => {
+                if (vals.len == 0) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                const text = self.valueToText(vals[0]);
+                const trimmed = std.mem.trimRight(u8, text, " ");
+                const result = dupeStr(self.allocator, trimmed) catch { self.allocator.free(text); return .null_val; };
+                self.allocator.free(text);
+                return .{ .text = result };
+            },
+            .ceil_fn => {
+                if (vals.len != 1) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                if (vals[0] == .integer) return vals[0];
+                const f = self.valueToF64(vals[0]) orelse return .null_val;
+                return self.formatFloat(@ceil(f));
+            },
+            .floor_fn => {
+                if (vals.len != 1) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                if (vals[0] == .integer) return vals[0];
+                const f = self.valueToF64(vals[0]) orelse return .null_val;
+                return self.formatFloat(@floor(f));
+            },
+            .sqrt_fn => {
+                if (vals.len != 1) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                const f = self.valueToF64(vals[0]) orelse return .null_val;
+                if (f < 0) return .null_val;
+                return self.formatFloat(@sqrt(f));
+            },
+            .power_fn => {
+                if (vals.len != 2) return .null_val;
+                if (vals[0] == .null_val or vals[1] == .null_val) return .null_val;
+                const base_f = self.valueToF64(vals[0]) orelse return .null_val;
+                const exp_f = self.valueToF64(vals[1]) orelse return .null_val;
+                return self.formatFloat(std.math.pow(f64, base_f, exp_f));
+            },
+            .substr => {
+                if (vals.len < 2 or vals.len > 3) return .null_val;
+                if (vals[0] == .null_val) return .null_val;
+                const text = self.valueToText(vals[0]);
+                const start_raw = self.valueToI64(vals[1]) orelse { self.allocator.free(text); return .null_val; };
+                const text_len: i64 = @intCast(text.len);
+                const y: i64 = if (start_raw < 0) text_len + start_raw + 1 else start_raw;
+                var z: i64 = text_len - y + 1;
+                if (vals.len == 3) z = self.valueToI64(vals[2]) orelse { self.allocator.free(text); return .null_val; };
+                var r_start: i64 = undefined;
+                var r_end: i64 = undefined;
+                if (z >= 0) { r_start = y; r_end = y + z; } else { r_start = y + z; r_end = y; }
+                if (r_start < 1) r_start = 1;
+                if (r_end > text_len + 1) r_end = text_len + 1;
+                if (r_start >= r_end) { self.allocator.free(text); return .{ .text = try dupeStr(self.allocator, "") }; }
+                const s: usize = @intCast(r_start - 1);
+                const e: usize = @intCast(r_end - 1);
+                const result = dupeStr(self.allocator, text[s..e]) catch { self.allocator.free(text); return .null_val; };
+                self.allocator.free(text);
+                return .{ .text = result };
+            },
+            .instr => {
+                if (vals.len != 2) return .null_val;
+                if (vals[0] == .null_val or vals[1] == .null_val) return .null_val;
+                const text = self.valueToText(vals[0]);
+                defer self.allocator.free(text);
+                const sub = self.valueToText(vals[1]);
+                defer self.allocator.free(sub);
+                if (std.mem.indexOf(u8, text, sub)) |pos| return .{ .integer = @as(i64, @intCast(pos)) + 1 };
+                return .{ .integer = 0 };
+            },
+            .replace_fn => {
+                if (vals.len != 3) return .null_val;
+                if (vals[0] == .null_val or vals[1] == .null_val or vals[2] == .null_val) return .null_val;
+                const text = self.valueToText(vals[0]);
+                const from = self.valueToText(vals[1]);
+                const to = self.valueToText(vals[2]);
+                const result = std.mem.replaceOwned(u8, self.allocator, text, from, to) catch {
+                    self.allocator.free(text); self.allocator.free(from); self.allocator.free(to); return .null_val;
+                };
+                self.allocator.free(text); self.allocator.free(from); self.allocator.free(to);
+                return .{ .text = result };
+            },
+            .random => {
+                const seed: u64 = @bitCast(std.time.milliTimestamp());
+                var rng = std.Random.DefaultPrng.init(seed);
+                return .{ .integer = rng.random().int(i64) };
+            },
+            .pi_fn => return self.formatFloat(std.math.pi),
+            else => return .null_val, // Unsupported functions in aggregate context
         }
     }
 
@@ -2948,10 +3241,8 @@ pub const Database = struct {
                         values[ei] = grp[0].values[col_idx];
                     },
                     .expr => |e| {
-                        if (parser.Parser.exprAsAggregate(e)) |agg| {
-                            values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator, agg.distinct);
-                        } else if (grp.len > 0) {
-                            values[ei] = try self.evalExpr(e, tbl, grp[0]);
+                        if (grp.len > 0) {
+                            values[ei] = try self.evalGroupExpr(e, tbl, grp);
                         } else {
                             values[ei] = .null_val;
                         }
@@ -3092,6 +3383,59 @@ pub const Database = struct {
                     }
                 };
                 std.mem.sort(Row, proj_rows, AggSortCtx{ .indices = ob_indices, .descs = ob_descs }, AggSortCtx.lessThan);
+            } else if (proj_rows.len > 0) {
+                // Fallback: evaluate ORDER BY expressions per group using evalGroupExpr
+                const n_items = order_by.items.len;
+                var sort_keys = try self.allocator.alloc([]Value, proj_rows.len);
+                defer {
+                    for (sort_keys) |keys| {
+                        for (keys) |v| if (v == .text) self.allocator.free(v.text);
+                        self.allocator.free(keys);
+                    }
+                    self.allocator.free(sort_keys);
+                }
+                for (0..proj_rows.len) |gi| {
+                    var keys = try self.allocator.alloc(Value, n_items);
+                    for (order_by.items, 0..) |item, ki| {
+                        if (item.expr) |e| {
+                            keys[ki] = try self.evalGroupExpr(e, tbl, group_rows.items[gi].items);
+                        } else {
+                            keys[ki] = .null_val;
+                        }
+                    }
+                    sort_keys[gi] = keys;
+                }
+                var ob_desc_flags = try self.allocator.alloc(bool, n_items);
+                defer self.allocator.free(ob_desc_flags);
+                for (order_by.items, 0..) |item, i| ob_desc_flags[i] = item.order == .desc;
+
+                const indices = try self.allocator.alloc(usize, proj_rows.len);
+                defer self.allocator.free(indices);
+                for (indices, 0..) |*idx, ii| idx.* = ii;
+                const ExprAggSortCtx = struct {
+                    keys: []const []Value,
+                    descs: []const bool,
+                    fn lessThan(ctx2: @This(), a: usize, b: usize) bool {
+                        for (ctx2.keys[a], ctx2.keys[b], ctx2.descs) |va, vb, is_desc| {
+                            const cmp = compareValuesOrder(va, vb);
+                            if (cmp == .eq) continue;
+                            if (is_desc) return cmp == .gt;
+                            return cmp == .lt;
+                        }
+                        return false;
+                    }
+                };
+                std.mem.sort(usize, indices, ExprAggSortCtx{ .keys = sort_keys, .descs = ob_desc_flags }, ExprAggSortCtx.lessThan);
+                const sorted_rows = try self.allocator.alloc(Row, proj_rows.len);
+                defer self.allocator.free(sorted_rows);
+                const sorted_vals = try self.allocator.alloc([]Value, proj_values.len);
+                defer self.allocator.free(sorted_vals);
+                for (indices, 0..) |idx, ii| {
+                    sorted_rows[ii] = proj_rows[idx];
+                    sorted_vals[ii] = proj_values[idx];
+                }
+                @memcpy(proj_rows, sorted_rows);
+                @memcpy(proj_values, sorted_vals);
             }
         }
 
