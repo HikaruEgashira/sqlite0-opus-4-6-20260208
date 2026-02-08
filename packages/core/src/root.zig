@@ -29,6 +29,7 @@ pub const HavingClause = parser.HavingClause;
 pub const Expr = parser.Expr;
 pub const BinOp = parser.BinOp;
 pub const UnaryOp = parser.UnaryOp;
+pub const ScalarFunc = parser.ScalarFunc;
 
 // Re-export table type for internal use
 pub const Table = table_mod.Table;
@@ -381,6 +382,145 @@ pub const Database = struct {
                 // Deep copy text to let caller free uniformly
                 return if (result == .text) .{ .text = try dupeStr(self.allocator, result.text) } else result;
             },
+            .scalar_func => |sf| {
+                return self.evalScalarFunc(sf.func, sf.args, tbl, row);
+            },
+        }
+    }
+
+    fn evalScalarFunc(self: *Database, func: ScalarFunc, args: []const *const Expr, tbl: *const Table, row: Row) !Value {
+        switch (func) {
+            .abs => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const n = self.valueToI64(val) orelse return .null_val;
+                return .{ .integer = if (n < 0) -n else n };
+            },
+            .length => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                if (val == .text) {
+                    const len: i64 = @intCast(val.text.len);
+                    self.allocator.free(val.text);
+                    return .{ .integer = len };
+                }
+                // For integers, convert to text first then measure length
+                const text = self.valueToText(val);
+                defer self.allocator.free(text);
+                return .{ .integer = @intCast(text.len) };
+            },
+            .upper => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                defer if (val == .text) self.allocator.free(val.text);
+                var buf = try self.allocator.alloc(u8, text.len);
+                for (text, 0..) |ch, i| {
+                    buf[i] = std.ascii.toUpper(ch);
+                }
+                self.allocator.free(text);
+                return .{ .text = buf };
+            },
+            .lower => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                defer if (val == .text) self.allocator.free(val.text);
+                var buf = try self.allocator.alloc(u8, text.len);
+                for (text, 0..) |ch, i| {
+                    buf[i] = std.ascii.toLower(ch);
+                }
+                self.allocator.free(text);
+                return .{ .text = buf };
+            },
+            .trim => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                defer if (val == .text) self.allocator.free(val.text);
+                const trimmed = std.mem.trim(u8, text, " ");
+                if (trimmed.len == text.len) {
+                    return .{ .text = text };
+                }
+                const result = dupeStr(self.allocator, trimmed) catch return .null_val;
+                self.allocator.free(text);
+                return .{ .text = result };
+            },
+            .typeof_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                const type_name: []const u8 = switch (val) {
+                    .integer => "integer",
+                    .text => "text",
+                    .null_val => "null",
+                };
+                return .{ .text = try dupeStr(self.allocator, type_name) };
+            },
+            .coalesce => {
+                for (args) |arg| {
+                    const val = try self.evalExpr(arg, tbl, row);
+                    if (val != .null_val) return val;
+                }
+                return .null_val;
+            },
+            .nullif => {
+                if (args.len != 2) return .null_val;
+                const v1 = try self.evalExpr(args[0], tbl, row);
+                const v2 = try self.evalExpr(args[1], tbl, row);
+                defer if (v2 == .text) self.allocator.free(v2.text);
+                if (compareValuesOrder(v1, v2) == .eq) {
+                    if (v1 == .text) self.allocator.free(v1.text);
+                    return .null_val;
+                }
+                return v1;
+            },
+            .max_fn => {
+                var best: ?Value = null;
+                for (args) |arg| {
+                    const val = try self.evalExpr(arg, tbl, row);
+                    if (val == .null_val) {
+                        continue;
+                    }
+                    if (best == null) {
+                        best = val;
+                    } else {
+                        if (compareValuesOrder(val, best.?) == .gt) {
+                            if (best.? == .text) self.allocator.free(best.?.text);
+                            best = val;
+                        } else {
+                            if (val == .text) self.allocator.free(val.text);
+                        }
+                    }
+                }
+                return best orelse .null_val;
+            },
+            .min_fn => {
+                var best: ?Value = null;
+                for (args) |arg| {
+                    const val = try self.evalExpr(arg, tbl, row);
+                    if (val == .null_val) {
+                        continue;
+                    }
+                    if (best == null) {
+                        best = val;
+                    } else {
+                        if (compareValuesOrder(val, best.?) == .lt) {
+                            if (best.? == .text) self.allocator.free(best.?.text);
+                            best = val;
+                        } else {
+                            if (val == .text) self.allocator.free(val.text);
+                        }
+                    }
+                }
+                return best orelse .null_val;
+            },
         }
     }
 
@@ -423,6 +563,10 @@ pub const Database = struct {
             },
             .scalar_subquery => |sq| {
                 self.allocator.free(@constCast(sq.subquery_sql));
+            },
+            .scalar_func => |sf| {
+                for (sf.args) |arg| self.freeExprDeep(arg);
+                self.allocator.free(sf.args);
             },
             else => {},
         }
@@ -736,6 +880,11 @@ pub const Database = struct {
     }
 
     fn executeSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
+        // Handle table-less SELECT (e.g., SELECT ABS(-10);)
+        if (sel.table_name.len == 0) {
+            return self.executeTablelessSelect(sel);
+        }
+
         // Handle JOIN queries
         if (sel.join != null) {
             return self.executeJoin(sel);
@@ -853,6 +1002,37 @@ pub const Database = struct {
             return self.projectColumns(sel, &table, result_rows);
         }
         return .{ .err = "table not found" };
+    }
+
+    /// Handle SELECT without FROM (e.g., SELECT ABS(-10); SELECT 1+2;)
+    fn executeTablelessSelect(self: *Database, sel: Statement.Select) !ExecuteResult {
+        const expr_count = sel.result_exprs.len;
+        // Create a dummy table with no columns for evalExpr context
+        var dummy_table = Table.init(self.allocator, "", &.{});
+        const dummy_row = Row{ .values = &.{} };
+
+        var values = try self.allocator.alloc(Value, expr_count);
+        var alloc_texts: std.ArrayList([]const u8) = .{};
+
+        for (sel.result_exprs, 0..) |expr, i| {
+            values[i] = try self.evalExpr(expr, &dummy_table, dummy_row);
+            if (values[i] == .text) {
+                alloc_texts.append(self.allocator, values[i].text) catch {};
+            }
+        }
+
+        var proj_values = try self.allocator.alloc([]Value, 1);
+        proj_values[0] = values;
+        var proj_rows = try self.allocator.alloc(Row, 1);
+        proj_rows[0] = .{ .values = values };
+        self.projected_rows = proj_rows;
+        self.projected_values = proj_values;
+        if (alloc_texts.items.len > 0) {
+            self.projected_texts = alloc_texts.toOwnedSlice(self.allocator) catch null;
+        } else {
+            alloc_texts.deinit(self.allocator);
+        }
+        return .{ .rows = proj_rows };
     }
 
     /// Evaluate SELECT with expression ASTs (handles arithmetic, concat, etc.)

@@ -11,7 +11,11 @@
 ### Phase 6d-4: SQL機能充実（完了）
 - [x] INTERSECT / EXCEPT 実装（SetOp enum、パーサー・実行エンジン拡張）
 - [x] GLOB演算子（case-sensitiveパターンマッチ: *, ?）
-- [x] Differential Test: **49/49 passing**
+- [x] BETWEEN / NOT演算子 / 多行INSERT / 単項マイナス / 剰余 / IF EXISTS
+- [x] 組込み関数: ABS, LENGTH, UPPER, LOWER, TRIM, TYPEOF, COALESCE, NULLIF
+- [x] MAX/MIN スカラー関数（複数引数対応）
+- [x] テーブルなしSELECT（FROM句なし式評価）
+- [x] Differential Test: **58/58 passing**
 
 ### 次のステップ
 

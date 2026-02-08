@@ -89,6 +89,19 @@ pub const UnaryOp = enum {
     not,
 };
 
+pub const ScalarFunc = enum {
+    abs,
+    length,
+    upper,
+    lower,
+    trim,
+    typeof_fn,
+    coalesce,
+    nullif,
+    max_fn,
+    min_fn,
+};
+
 pub const Expr = union(enum) {
     integer_literal: i64,
     string_literal: []const u8,
@@ -119,6 +132,10 @@ pub const Expr = union(enum) {
     },
     scalar_subquery: struct {
         subquery_sql: []const u8, // SQL text for (SELECT ...)
+    },
+    scalar_func: struct {
+        func: ScalarFunc,
+        args: []const *const Expr,
     },
 };
 
@@ -537,8 +554,47 @@ pub const Parser = struct {
             }
         }
 
-        _ = try self.expect(.kw_from);
-        const table_tok = try self.expect(.identifier);
+        // FROM is optional for table-less SELECT (e.g., SELECT ABS(-10);)
+        var table_name: []const u8 = "";
+        if (self.peek().type == .kw_from) {
+            _ = self.advance();
+            const table_tok = try self.expect(.identifier);
+            table_name = table_tok.lexeme;
+        }
+
+        // If no FROM clause, skip directly to possible semicolon/set-op
+        if (table_name.len == 0) {
+            // Check for set operations
+            if (self.peek().type == .kw_union or self.peek().type == .kw_intersect or self.peek().type == .kw_except) {
+                var select_start: usize = 0;
+                for (self.tokens, 0..) |token, i| {
+                    if (token.type == .kw_select) {
+                        select_start = i;
+                        break;
+                    }
+                }
+                const first_select_sql = try self.reconstructSQL(self.tokens[select_start..self.pos]);
+                return try self.parseSetOp(first_select_sql);
+            }
+            _ = try self.expect(.semicolon);
+            return Statement{
+                .select_stmt = .{
+                    .table_name = "",
+                    .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .distinct = distinct,
+                    .join = null,
+                    .where = null,
+                    .where_expr = null,
+                    .group_by = null,
+                    .having = null,
+                    .order_by = null,
+                    .limit = null,
+                    .offset = null,
+                },
+            };
+        }
 
         // Parse optional JOIN
         const join = if (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join)
@@ -637,7 +693,7 @@ pub const Parser = struct {
 
         return Statement{
             .select_stmt = .{
-                .table_name = table_tok.lexeme,
+                .table_name = table_name,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
@@ -946,7 +1002,7 @@ pub const Parser = struct {
             } });
         }
 
-        // Aggregate function
+        // Aggregate function (or MAX/MIN scalar with multiple args)
         if (isAggFunc(tok.type)) |func| {
             _ = self.advance();
             _ = try self.expect(.lparen);
@@ -955,6 +1011,22 @@ pub const Parser = struct {
                 _ = self.advance();
                 break :blk try self.allocExpr(.{ .star = {} });
             } else try self.parseExpr();
+            // MAX/MIN with multiple args → scalar function
+            if (self.peek().type == .comma and (func == .max or func == .min)) {
+                var args: std.ArrayList(*const Expr) = .{};
+                args.append(self.allocator, arg_expr) catch return ParseError.OutOfMemory;
+                while (self.peek().type == .comma) {
+                    _ = self.advance();
+                    const next_arg = try self.parseExpr();
+                    args.append(self.allocator, next_arg) catch return ParseError.OutOfMemory;
+                }
+                _ = try self.expect(.rparen);
+                const scalar_func: ScalarFunc = if (func == .max) .max_fn else .min_fn;
+                return self.allocExpr(.{ .scalar_func = .{
+                    .func = scalar_func,
+                    .args = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                } });
+            }
             _ = try self.expect(.rparen);
             return self.allocExpr(.{ .aggregate = .{ .func = func, .arg = arg_expr } });
         }
@@ -1000,6 +1072,31 @@ pub const Parser = struct {
         if (tok.type == .star) {
             _ = self.advance();
             return self.allocExpr(.{ .star = {} });
+        }
+
+        // Scalar function call: identifier followed by '('
+        if (tok.type == .identifier and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
+            if (classifyScalarFunc(tok.lexeme)) |func| {
+                _ = self.advance(); // consume function name
+                _ = self.advance(); // consume '('
+                var args: std.ArrayList(*const Expr) = .{};
+                if (self.peek().type != .rparen) {
+                    while (true) {
+                        const arg = try self.parseExpr();
+                        args.append(self.allocator, arg) catch return ParseError.OutOfMemory;
+                        if (self.peek().type == .comma) {
+                            _ = self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                _ = try self.expect(.rparen);
+                return self.allocExpr(.{ .scalar_func = .{
+                    .func = func,
+                    .args = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                } });
+            }
         }
 
         // Identifier (column reference)
@@ -1063,6 +1160,12 @@ pub const Parser = struct {
             .in_list => |il| {
                 freeExpr(allocator, il.operand);
             },
+            .scalar_func => |sf| {
+                for (sf.args) |arg| {
+                    freeExpr(allocator, arg);
+                }
+                allocator.free(sf.args);
+            },
             else => {},
         }
         allocator.destroy(@constCast(expr));
@@ -1074,6 +1177,27 @@ pub const Parser = struct {
             freeExpr(allocator, expr);
         }
         allocator.free(exprs);
+    }
+
+    fn classifyScalarFunc(name: []const u8) ?ScalarFunc {
+        const funcs = .{
+            .{ "ABS", ScalarFunc.abs },
+            .{ "LENGTH", ScalarFunc.length },
+            .{ "UPPER", ScalarFunc.upper },
+            .{ "LOWER", ScalarFunc.lower },
+            .{ "TRIM", ScalarFunc.trim },
+            .{ "TYPEOF", ScalarFunc.typeof_fn },
+            .{ "COALESCE", ScalarFunc.coalesce },
+            .{ "NULLIF", ScalarFunc.nullif },
+            .{ "MAX", ScalarFunc.max_fn },
+            .{ "MIN", ScalarFunc.min_fn },
+        };
+        inline for (funcs) |entry| {
+            if (std.ascii.eqlIgnoreCase(name, entry[0])) {
+                return entry[1];
+            }
+        }
+        return null;
     }
 
     fn parseCompOp(self: *Parser) ParseError!CompOp {

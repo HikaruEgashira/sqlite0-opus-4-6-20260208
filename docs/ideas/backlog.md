@@ -23,6 +23,23 @@
 - ~~複数カラムのUPDATE SET~~ ✓
 - ~~比較演算子を式として使用~~ ✓
 - ~~WHERE句の式ベース化（AND/ORを含む完全なExpr化）~~ ✓
+- ~~NOT演算子（NOT expr, NOT LIKE, NOT IN, NOT BETWEEN）~~ ✓
+- ~~BETWEEN演算子~~ ✓
+- ~~多行INSERT VALUES~~ ✓
+- ~~単項マイナス演算子~~ ✓
+- ~~剰余演算子 (%)~~ ✓
+- ~~SQLコメント (--)~~ ✓
+- ~~CREATE TABLE IF NOT EXISTS / DROP TABLE IF EXISTS~~ ✓
+- ~~COALESCE / NULLIF 関数~~ ✓
+- ~~ABS / LENGTH / UPPER / LOWER / TRIM / TYPEOF 関数~~ ✓
+- ~~テーブルなしSELECT（SELECT 1+2; SELECT ABS(-10);）~~ ✓
+- ~~MAX / MIN スカラー関数（複数引数）~~ ✓
+- カラムエイリアス（AS）
+- IIF 関数
+- 型キャスト（CAST）
+- REPLACE文
+- UPDATE SET col = expr（式による更新）
+- 複数ORDER BYカラム
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
