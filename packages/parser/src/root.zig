@@ -604,22 +604,29 @@ pub const Parser = struct {
                 break;
             }
             const col_name = try self.expect(.identifier);
-            const col_type_tok = self.advance();
-            const col_type_str: []const u8 = switch (col_type_tok.type) {
-                .kw_integer => "INTEGER",
-                .kw_text => "TEXT",
-                .kw_real => "REAL",
-                .identifier => self.mapColumnType(col_type_tok.lexeme),
-                else => return ParseError.UnexpectedToken,
-            };
-            // Skip optional (N) or (N,M) for VARCHAR(N), DECIMAL(P,S), etc.
-            if (col_type_tok.type == .identifier and self.peek().type == .lparen) {
-                _ = self.advance();
-                while (self.peek().type != .rparen and self.peek().type != .eof) {
+            // Column type is optional (default to TEXT if missing)
+            const next_tok_type = self.peek().type;
+            const has_type = (next_tok_type == .kw_integer or next_tok_type == .kw_text or
+                next_tok_type == .kw_real or next_tok_type == .identifier);
+            const col_type_str: []const u8 = if (has_type) blk: {
+                const col_type_tok = self.advance();
+                const ct: []const u8 = switch (col_type_tok.type) {
+                    .kw_integer => "INTEGER",
+                    .kw_text => "TEXT",
+                    .kw_real => "REAL",
+                    .identifier => self.mapColumnType(col_type_tok.lexeme),
+                    else => unreachable,
+                };
+                // Skip optional (N) or (N,M) for VARCHAR(N), DECIMAL(P,S), etc.
+                if (col_type_tok.type == .identifier and self.peek().type == .lparen) {
                     _ = self.advance();
+                    while (self.peek().type != .rparen and self.peek().type != .eof) {
+                        _ = self.advance();
+                    }
+                    _ = try self.expect(.rparen);
                 }
-                _ = try self.expect(.rparen);
-            }
+                break :blk ct;
+            } else "TEXT";
 
             var is_pk = false;
             var default_val: ?[]const u8 = null;
