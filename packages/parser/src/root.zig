@@ -106,6 +106,10 @@ pub const ScalarFunc = enum {
     nullif,
     max_fn,
     min_fn,
+    iif,
+    substr,
+    instr,
+    replace_fn,
 };
 
 pub const Expr = union(enum) {
@@ -1226,6 +1230,11 @@ pub const Parser = struct {
             .{ "NULLIF", ScalarFunc.nullif },
             .{ "MAX", ScalarFunc.max_fn },
             .{ "MIN", ScalarFunc.min_fn },
+            .{ "IIF", ScalarFunc.iif },
+            .{ "SUBSTR", ScalarFunc.substr },
+            .{ "SUBSTRING", ScalarFunc.substr },
+            .{ "INSTR", ScalarFunc.instr },
+            .{ "REPLACE", ScalarFunc.replace_fn },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {

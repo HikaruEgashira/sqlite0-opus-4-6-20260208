@@ -522,6 +522,102 @@ pub const Database = struct {
                 }
                 return best orelse .null_val;
             },
+            .iif => {
+                if (args.len != 3) return .null_val;
+                const cond = try self.evalExpr(args[0], tbl, row);
+                defer if (cond == .text) self.allocator.free(cond.text);
+                if (self.valueToBool(cond)) {
+                    return try self.evalExpr(args[1], tbl, row);
+                } else {
+                    return try self.evalExpr(args[2], tbl, row);
+                }
+            },
+            .substr => {
+                if (args.len < 2 or args.len > 3) return .null_val;
+                const str_val = try self.evalExpr(args[0], tbl, row);
+                if (str_val == .null_val) return .null_val;
+                const text = self.valueToText(str_val);
+                defer if (str_val == .text) self.allocator.free(str_val.text);
+                const start_val = try self.evalExpr(args[1], tbl, row);
+                defer if (start_val == .text) self.allocator.free(start_val.text);
+                const start_raw = self.valueToI64(start_val) orelse {
+                    self.allocator.free(text);
+                    return .null_val;
+                };
+                // SQLite SUBSTR is 1-based; negative means from end
+                const text_len: i64 = @intCast(text.len);
+                var start: i64 = if (start_raw > 0) start_raw - 1 else if (start_raw < 0) text_len + start_raw else 0;
+                if (start < 0) start = 0;
+                var length: i64 = text_len - start;
+                if (args.len == 3) {
+                    const len_val = try self.evalExpr(args[2], tbl, row);
+                    defer if (len_val == .text) self.allocator.free(len_val.text);
+                    length = self.valueToI64(len_val) orelse {
+                        self.allocator.free(text);
+                        return .null_val;
+                    };
+                    if (length < 0) length = 0;
+                }
+                const s: usize = @intCast(@min(start, text_len));
+                const e: usize = @intCast(@min(start + length, text_len));
+                const result = dupeStr(self.allocator, text[s..e]) catch return .null_val;
+                self.allocator.free(text);
+                return .{ .text = result };
+            },
+            .instr => {
+                if (args.len != 2) return .null_val;
+                const str_val = try self.evalExpr(args[0], tbl, row);
+                if (str_val == .null_val) return .null_val;
+                const text = self.valueToText(str_val);
+                defer if (str_val == .text) self.allocator.free(str_val.text);
+                const sub_val = try self.evalExpr(args[1], tbl, row);
+                if (sub_val == .null_val) {
+                    self.allocator.free(text);
+                    return .null_val;
+                }
+                const sub = self.valueToText(sub_val);
+                defer if (sub_val == .text) self.allocator.free(sub_val.text);
+                if (std.mem.indexOf(u8, text, sub)) |pos| {
+                    self.allocator.free(text);
+                    self.allocator.free(sub);
+                    return .{ .integer = @as(i64, @intCast(pos)) + 1 }; // 1-based
+                }
+                self.allocator.free(text);
+                self.allocator.free(sub);
+                return .{ .integer = 0 };
+            },
+            .replace_fn => {
+                if (args.len != 3) return .null_val;
+                const str_val = try self.evalExpr(args[0], tbl, row);
+                if (str_val == .null_val) return .null_val;
+                const text = self.valueToText(str_val);
+                defer if (str_val == .text) self.allocator.free(str_val.text);
+                const from_val = try self.evalExpr(args[1], tbl, row);
+                if (from_val == .null_val) {
+                    self.allocator.free(text);
+                    return .null_val;
+                }
+                const from = self.valueToText(from_val);
+                defer if (from_val == .text) self.allocator.free(from_val.text);
+                const to_val = try self.evalExpr(args[2], tbl, row);
+                if (to_val == .null_val) {
+                    self.allocator.free(text);
+                    self.allocator.free(from);
+                    return .null_val;
+                }
+                const to = self.valueToText(to_val);
+                defer if (to_val == .text) self.allocator.free(to_val.text);
+                const result = std.mem.replaceOwned(u8, self.allocator, text, from, to) catch {
+                    self.allocator.free(text);
+                    self.allocator.free(from);
+                    self.allocator.free(to);
+                    return .null_val;
+                };
+                self.allocator.free(text);
+                self.allocator.free(from);
+                self.allocator.free(to);
+                return .{ .text = result };
+            },
         }
     }
 
