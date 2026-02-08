@@ -428,6 +428,88 @@ pub const Database = struct {
         }
     }
 
+    /// Evaluate an expression in GROUP BY context where aggregates are computed over group rows.
+    fn evalGroupExpr(self: *Database, expr: *const Expr, tbl: *const Table, group_rows: []const Row) !Value {
+        switch (expr.*) {
+            .aggregate => |agg| {
+                const arg_name: []const u8 = switch (agg.arg.*) {
+                    .column_ref => |name| name,
+                    .star => "*",
+                    else => return .null_val,
+                };
+                return self.computeAgg(agg.func, arg_name, tbl, group_rows, agg.separator, agg.distinct);
+            },
+            .binary_op => |bin| {
+                // Short-circuit for logical ops
+                if (bin.op == .logical_and) {
+                    const left_val = try self.evalGroupExpr(bin.left, tbl, group_rows);
+                    defer if (left_val == .text) self.allocator.free(left_val.text);
+                    if (!self.valueToBool(left_val)) return .{ .integer = 0 };
+                    const right_val = try self.evalGroupExpr(bin.right, tbl, group_rows);
+                    defer if (right_val == .text) self.allocator.free(right_val.text);
+                    return .{ .integer = if (self.valueToBool(right_val)) @as(i64, 1) else 0 };
+                }
+                if (bin.op == .logical_or) {
+                    const left_val = try self.evalGroupExpr(bin.left, tbl, group_rows);
+                    defer if (left_val == .text) self.allocator.free(left_val.text);
+                    if (self.valueToBool(left_val)) return .{ .integer = 1 };
+                    const right_val = try self.evalGroupExpr(bin.right, tbl, group_rows);
+                    defer if (right_val == .text) self.allocator.free(right_val.text);
+                    return .{ .integer = if (self.valueToBool(right_val)) @as(i64, 1) else 0 };
+                }
+
+                const left_val = try self.evalGroupExpr(bin.left, tbl, group_rows);
+                const right_val = try self.evalGroupExpr(bin.right, tbl, group_rows);
+                defer {
+                    if (left_val == .text) self.allocator.free(left_val.text);
+                    if (right_val == .text) self.allocator.free(right_val.text);
+                }
+
+                // Comparison operators
+                if (bin.op == .eq or bin.op == .ne or bin.op == .lt or bin.op == .le or bin.op == .gt or bin.op == .ge) {
+                    if (left_val == .null_val or right_val == .null_val) return .null_val;
+                    const cmp = compareValuesOrder(left_val, right_val);
+                    const cmp_result = switch (bin.op) {
+                        .eq => cmp == .eq,
+                        .ne => cmp != .eq,
+                        .lt => cmp == .lt,
+                        .le => cmp == .lt or cmp == .eq,
+                        .gt => cmp == .gt,
+                        .ge => cmp == .gt or cmp == .eq,
+                        else => false,
+                    };
+                    return .{ .integer = if (cmp_result) 1 else 0 };
+                }
+
+                if (left_val == .null_val or right_val == .null_val) return .null_val;
+
+                switch (bin.op) {
+                    .add, .sub, .mul, .div, .mod => {
+                        const l = self.valueToI64(left_val);
+                        const r = self.valueToI64(right_val);
+                        if (l == null or r == null) return .null_val;
+                        return .{ .integer = switch (bin.op) {
+                            .add => l.? + r.?,
+                            .sub => l.? - r.?,
+                            .mul => l.? * r.?,
+                            .div => if (r.? == 0) return .null_val else @divTrunc(l.?, r.?),
+                            .mod => if (r.? == 0) return .null_val else @rem(l.?, r.?),
+                            else => unreachable,
+                        } };
+                    },
+                    else => return .null_val,
+                }
+            },
+            else => {
+                // For non-aggregate expressions, evaluate against the first row
+                if (group_rows.len > 0) {
+                    return self.evalExpr(expr, tbl, group_rows[0]);
+                }
+                return .null_val;
+            },
+        }
+    }
+
     fn evalScalarFunc(self: *Database, func: ScalarFunc, args: []const *const Expr, tbl: *const Table, row: Row) !Value {
         switch (func) {
             .abs => {
@@ -1116,12 +1198,20 @@ pub const Database = struct {
         }
 
         const n_groups = group_keys.items.len;
-        var proj_values = try self.allocator.alloc([]Value, n_groups);
-        var proj_rows = try self.allocator.alloc(Row, n_groups);
+        var proj_values_list: std.ArrayList([]Value) = .{};
+        var proj_rows_list: std.ArrayList(Row) = .{};
 
         for (0..n_groups) |gi| {
-            var values = try self.allocator.alloc(Value, sel.select_exprs.len);
             const grp = group_rows.items[gi].items;
+
+            // Apply HAVING filter (expr-based) before projection
+            if (sel.having_expr) |he| {
+                const hval = try self.evalGroupExpr(he, tbl, grp);
+                defer if (hval == .text) self.allocator.free(hval.text);
+                if (!self.valueToBool(hval)) continue;
+            }
+
+            const values = try self.allocator.alloc(Value, sel.select_exprs.len);
             for (sel.select_exprs, 0..) |expr, ei| {
                 switch (expr) {
                     .aggregate => |agg| {
@@ -1142,9 +1232,12 @@ pub const Database = struct {
                     },
                 }
             }
-            proj_values[gi] = values;
-            proj_rows[gi] = .{ .values = values };
+            try proj_values_list.append(self.allocator, values);
+            try proj_rows_list.append(self.allocator, .{ .values = values });
         }
+
+        const proj_values = try proj_values_list.toOwnedSlice(self.allocator);
+        const proj_rows = try proj_rows_list.toOwnedSlice(self.allocator);
 
         // Sort groups by group key columns to match sqlite3 output order
         // Find the indices of GROUP BY columns in select_exprs
@@ -1189,43 +1282,7 @@ pub const Database = struct {
             }.lessThan);
         }
 
-        // Apply HAVING filter
-        if (sel.having) |having| {
-            var write_idx: usize = 0;
-            const count = proj_rows.len;
-            for (0..count) |ri| {
-                // Evaluate HAVING on already-computed projected values
-                var having_val: ?Value = null;
-                for (sel.select_exprs, 0..) |expr, ei| {
-                    if (expr == .aggregate) {
-                        const agg = expr.aggregate;
-                        if (agg.func == having.func and std.mem.eql(u8, agg.arg, having.arg)) {
-                            having_val = proj_rows[ri].values[ei];
-                            break;
-                        }
-                    }
-                }
-                if (having_val == null) {
-                    // HAVING aggregate not in SELECT list — skip filtering for this row
-                    proj_rows[write_idx] = proj_rows[ri];
-                    proj_values[write_idx] = proj_values[ri];
-                    write_idx += 1;
-                    continue;
-                }
-                const hv = having_val.?;
-                const compare_val = Table.parseRawValue(having.value);
-                if (Table.compareValues(hv, compare_val, having.op)) {
-                    proj_rows[write_idx] = proj_rows[ri];
-                    proj_values[write_idx] = proj_values[ri];
-                    write_idx += 1;
-                } else {
-                    // Free filtered-out row's values
-                    self.allocator.free(proj_values[ri]);
-                }
-            }
-            proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
-            proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
-        }
+        // HAVING is now applied during group projection (above)
 
         self.projected_rows = proj_rows;
         self.projected_values = proj_values;
@@ -1279,7 +1336,7 @@ pub const Database = struct {
                 break :blk false;
             };
 
-            if (has_agg) {
+            if (has_agg or sel.group_by != null) {
                 return self.executeAggregate(&table, sel, matching_rows.items);
             }
 

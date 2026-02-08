@@ -260,6 +260,7 @@ pub const Statement = union(enum) {
         where_expr: ?*const Expr = null, // Expr-based WHERE (Phase 6c)
         group_by: ?[]const []const u8, // column names (multiple GROUP BY columns)
         having: ?HavingClause,
+        having_expr: ?*const Expr = null,
         order_by: ?OrderByClause,
         limit: ?i64,
         offset: ?i64,
@@ -769,32 +770,12 @@ pub const Parser = struct {
             group_by = gb_cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         }
 
-        // Parse optional HAVING
-        var having: ?HavingClause = null;
+        // Parse optional HAVING (expr-based)
+        const having: ?HavingClause = null;
+        var having_expr: ?*const Expr = null;
         if (self.peek().type == .kw_having) {
             _ = self.advance();
-            const func = isAggFunc(self.peek().type) orelse return ParseError.UnexpectedToken;
-            _ = self.advance();
-            _ = try self.expect(.lparen);
-            const having_arg_tok = self.advance();
-            const having_arg: []const u8 = switch (having_arg_tok.type) {
-                .star => "*",
-                .identifier => having_arg_tok.lexeme,
-                else => return ParseError.UnexpectedToken,
-            };
-            _ = try self.expect(.rparen);
-            const having_op = try self.parseCompOp();
-            const having_val = self.advance();
-            switch (having_val.type) {
-                .integer_literal, .string_literal, .identifier => {},
-                else => return ParseError.UnexpectedToken,
-            }
-            having = .{
-                .func = func,
-                .arg = having_arg,
-                .op = having_op,
-                .value = having_val.lexeme,
-            };
+            having_expr = try self.parseWhereExpr();
         }
 
         // Parse optional ORDER BY
@@ -850,6 +831,7 @@ pub const Parser = struct {
                 .where_expr = where_expr,
                 .group_by = group_by,
                 .having = having,
+                .having_expr = having_expr,
                 .order_by = order_by,
                 .limit = limit,
                 .offset = offset,
