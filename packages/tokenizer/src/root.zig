@@ -181,8 +181,18 @@ pub const Tokenizer = struct {
     }
 
     fn skipWhitespace(self: *Tokenizer) void {
-        while (self.pos < self.source.len and std.ascii.isWhitespace(self.source[self.pos])) {
-            self.pos += 1;
+        while (self.pos < self.source.len) {
+            if (std.ascii.isWhitespace(self.source[self.pos])) {
+                self.pos += 1;
+            } else if (self.pos + 1 < self.source.len and self.source[self.pos] == '-' and self.source[self.pos + 1] == '-') {
+                // Skip -- line comment
+                self.pos += 2;
+                while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+                    self.pos += 1;
+                }
+            } else {
+                break;
+            }
         }
     }
 

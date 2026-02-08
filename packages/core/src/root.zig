@@ -1510,6 +1510,11 @@ pub const Database = struct {
         const tokens = try tok.tokenize(self.allocator);
         defer self.allocator.free(tokens);
 
+        // Skip empty input (e.g., comment-only lines)
+        if (tokens.len == 0 or (tokens.len == 1 and tokens[0].type == .eof)) {
+            return .ok;
+        }
+
         var p = Parser.init(self.allocator, tokens);
         const stmt = try p.parse();
 
