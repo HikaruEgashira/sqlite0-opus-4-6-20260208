@@ -1752,6 +1752,7 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
+                defer self.allocator.free(sel.aliases);
                 defer {
                     for (sel.result_exprs) |e| self.freeExprDeep(e);
                     self.allocator.free(sel.result_exprs);

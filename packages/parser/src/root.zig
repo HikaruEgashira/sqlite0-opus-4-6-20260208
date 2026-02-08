@@ -208,6 +208,7 @@ pub const Statement = union(enum) {
         columns: []const []const u8, // empty = * (plain column names for backward compat)
         select_exprs: []const SelectExpr, // full expression list (includes aggregates)
         result_exprs: []const *const Expr, // parsed expression ASTs for each SELECT item
+        aliases: []const ?[]const u8, // column aliases (null if no alias)
         distinct: bool,
         join: ?JoinClause,
         where: ?WhereClause,
@@ -526,6 +527,7 @@ pub const Parser = struct {
         var columns: std.ArrayList([]const u8) = .{};
         var select_exprs: std.ArrayList(SelectExpr) = .{};
         var result_exprs: std.ArrayList(*const Expr) = .{};
+        var aliases: std.ArrayList(?[]const u8) = .{};
 
         if (self.peek().type == .star) {
             _ = self.advance();
@@ -534,6 +536,15 @@ pub const Parser = struct {
                 // Parse each SELECT item as a full expression
                 const expr = try self.parseExpr();
                 result_exprs.append(self.allocator, expr) catch return ParseError.OutOfMemory;
+
+                // Parse optional AS alias
+                var alias: ?[]const u8 = null;
+                if (self.peek().type == .kw_as) {
+                    _ = self.advance();
+                    const alias_tok = try self.expect(.identifier);
+                    alias = alias_tok.lexeme;
+                }
+                aliases.append(self.allocator, alias) catch return ParseError.OutOfMemory;
 
                 // Also populate legacy columns/select_exprs for backward compat
                 if (exprAsAggregate(expr)) |agg| {
@@ -583,6 +594,7 @@ pub const Parser = struct {
                     .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                     .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                     .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .aliases = aliases.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                     .distinct = distinct,
                     .join = null,
                     .where = null,
@@ -697,6 +709,7 @@ pub const Parser = struct {
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .aliases = aliases.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .distinct = distinct,
                 .join = join,
                 .where = where,
@@ -1658,6 +1671,7 @@ test "parse SELECT" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.result_exprs);
+            defer allocator.free(sel.aliases);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
             try std.testing.expectEqual(@as(?WhereClause, null), sel.where);
@@ -1679,6 +1693,7 @@ test "parse SELECT with WHERE" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.result_exprs);
+            defer allocator.free(sel.aliases);
             // Phase 6c: WHERE is now parsed as where_expr
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expect(sel.where_expr != null);
@@ -1749,6 +1764,7 @@ test "parse SELECT with ORDER BY" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.result_exprs);
+            defer allocator.free(sel.aliases);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expect(sel.order_by != null);
             try std.testing.expectEqualStrings("name", sel.order_by.?.column);
@@ -1773,6 +1789,7 @@ test "parse SELECT with LIMIT OFFSET" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.result_exprs);
+            defer allocator.free(sel.aliases);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expectEqual(@as(?i64, 10), sel.limit);
             try std.testing.expectEqual(@as(?i64, 5), sel.offset);
@@ -1811,6 +1828,7 @@ test "parse SELECT COUNT(*)" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.select_exprs);
+            defer allocator.free(sel.aliases);
             defer Parser.freeExprSlice(allocator, sel.result_exprs);
             try std.testing.expectEqual(@as(usize, 0), sel.columns.len);
             try std.testing.expectEqual(@as(usize, 1), sel.select_exprs.len);
@@ -1833,6 +1851,7 @@ test "parse SELECT with multiple aggregates" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.select_exprs);
+            defer allocator.free(sel.aliases);
             defer Parser.freeExprSlice(allocator, sel.result_exprs);
             try std.testing.expectEqual(@as(usize, 3), sel.select_exprs.len);
             try std.testing.expectEqual(AggFunc.count, sel.select_exprs[0].aggregate.func);
