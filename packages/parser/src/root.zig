@@ -223,7 +223,8 @@ pub const Statement = union(enum) {
         values: []const []const u8, // first row values (or empty for INSERT SELECT)
         extra_rows: []const []const []const u8, // additional rows for multi-row INSERT
         select_sql: ?[]const u8 = null, // INSERT INTO ... SELECT (raw SQL)
-        replace_mode: bool = false, // REPLACE INTO behavior
+        replace_mode: bool = false, // REPLACE INTO / INSERT OR REPLACE behavior
+        ignore_mode: bool = false, // INSERT OR IGNORE behavior
     };
 
     pub const Select = struct {
@@ -433,6 +434,23 @@ pub const Parser = struct {
 
     fn parseInsert(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_insert);
+
+        // Parse optional OR IGNORE / OR REPLACE
+        var replace_mode = false;
+        var ignore_mode = false;
+        if (self.peek().type == .kw_or) {
+            _ = self.advance(); // consume OR
+            if (self.peek().type == .kw_replace) {
+                _ = self.advance();
+                replace_mode = true;
+            } else if (self.peek().type == .kw_ignore) {
+                _ = self.advance();
+                ignore_mode = true;
+            } else {
+                return ParseError.UnexpectedToken;
+            }
+        }
+
         _ = try self.expect(.kw_into);
         const name_tok = try self.expect(.identifier);
 
@@ -445,6 +463,8 @@ pub const Parser = struct {
                     .values = &.{},
                     .extra_rows = &.{},
                     .select_sql = select_sql,
+                    .replace_mode = replace_mode,
+                    .ignore_mode = ignore_mode,
                 },
             };
         }
@@ -468,6 +488,8 @@ pub const Parser = struct {
                 .table_name = name_tok.lexeme,
                 .values = first_row,
                 .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .replace_mode = replace_mode,
+                .ignore_mode = ignore_mode,
             },
         };
     }

@@ -642,6 +642,28 @@ pub const Database = struct {
         }
     }
 
+    /// Check if a row with matching PK already exists
+    fn hasPkConflict(self: *Database, table: *Table, raw_values: []const []const u8) bool {
+        var pk_idx: ?usize = null;
+        for (table.columns, 0..) |col, i| {
+            if (col.is_primary_key) {
+                pk_idx = i;
+                break;
+            }
+        }
+        if (pk_idx) |pidx| {
+            if (pidx < raw_values.len) {
+                const pk_val: Value = if (std.mem.eql(u8, raw_values[pidx], "NULL")) .null_val else Table.parseRawValue(raw_values[pidx]);
+                for (table.storage().scan()) |row| {
+                    if (pidx < row.values.len) {
+                        if (self.valuesEqualUnion(row.values[pidx], pk_val)) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     /// REPLACE INTO: delete existing row with matching PK, then insert
     fn replaceRow(self: *Database, table: *Table, raw_values: []const []const u8) void {
         // Find primary key column index
@@ -1929,12 +1951,20 @@ pub const Database = struct {
                     }
                     if (ins.replace_mode) {
                         self.replaceRow(table, ins.values);
+                    } else if (ins.ignore_mode) {
+                        if (!self.hasPkConflict(table, ins.values)) {
+                            try table.insertRow(ins.values);
+                        }
                     } else {
                         try table.insertRow(ins.values);
                     }
                     for (ins.extra_rows) |row_values| {
                         if (ins.replace_mode) {
                             self.replaceRow(table, row_values);
+                        } else if (ins.ignore_mode) {
+                            if (!self.hasPkConflict(table, row_values)) {
+                                try table.insertRow(row_values);
+                            }
                         } else {
                             try table.insertRow(row_values);
                         }

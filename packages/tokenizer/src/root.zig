@@ -68,6 +68,7 @@ pub const TokenType = enum {
     kw_exists,
     kw_as,
     kw_replace,
+    kw_ignore,
 
     // Literals
     integer_literal,
@@ -302,6 +303,7 @@ pub const Tokenizer = struct {
             .{ "EXISTS", TokenType.kw_exists },
             .{ "AS", TokenType.kw_as },
             .{ "REPLACE", TokenType.kw_replace },
+            .{ "IGNORE", TokenType.kw_ignore },
         };
 
         inline for (keywords) |entry| {
