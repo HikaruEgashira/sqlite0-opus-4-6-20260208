@@ -1440,8 +1440,7 @@ pub const Database = struct {
                             const val = try self.evalExpr(we, table, rows[i]);
                             defer if (val == .text) self.allocator.free(val.text);
                             if (self.valueToBool(val)) {
-                                const rows2 = table.storage().scan();
-                                table.freeRow(rows2[i]);
+                                table.freeRow(rows[i]);
                                 _ = table.storage().orderedRemove(i);
                             }
                         }

@@ -19,12 +19,10 @@ pub const ArrayListStorage = struct {
         .deinit = deinitStorage,
     };
 
-    /// Initialize empty ArrayList storage
     pub fn init() ArrayListStorage {
         return .{ .rows = .{} };
     }
 
-    /// Get the abstract RowStorage interface for this storage
     pub fn storage(self: *const ArrayListStorage) RowStorage {
         return .{
             .ptr = @ptrCast(@constCast(self)),

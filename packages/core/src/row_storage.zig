@@ -33,37 +33,30 @@ pub const RowStorage = struct {
         deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
     };
 
-    /// Iterate all rows
     pub fn scan(self: RowStorage) []const Row {
         return self.vtable.scan(self.ptr);
     }
 
-    /// Iterate all rows with mutable access
     pub fn scanMut(self: RowStorage) []Row {
         return self.vtable.scanMut(self.ptr);
     }
 
-    /// Get number of rows
     pub fn len(self: RowStorage) usize {
         return self.vtable.len(self.ptr);
     }
 
-    /// Append a row
     pub fn append(self: RowStorage, allocator: std.mem.Allocator, row: Row) error{OutOfMemory}!void {
         return self.vtable.append(self.ptr, allocator, row);
     }
 
-    /// Remove row at index
     pub fn orderedRemove(self: RowStorage, index: usize) Row {
         return self.vtable.orderedRemove(self.ptr, index);
     }
 
-    /// Clear all rows
     pub fn clearRetainingCapacity(self: RowStorage) void {
         return self.vtable.clearRetainingCapacity(self.ptr);
     }
 
-    /// Deinitialize storage
     pub fn deinit(self: RowStorage, allocator: std.mem.Allocator) void {
         return self.vtable.deinit(self.ptr, allocator);
     }
