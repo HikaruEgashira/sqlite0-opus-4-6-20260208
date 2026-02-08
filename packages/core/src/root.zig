@@ -974,6 +974,36 @@ pub const Database = struct {
             .strftime_fn => {
                 return self.evalStrftime(args, tbl, row);
             },
+            .like_fn => {
+                // LIKE(pattern, string) → 1 if matches, 0 otherwise
+                if (args.len < 2) return .null_val;
+                const pattern_val = try self.evalExpr(args[0], tbl, row);
+                defer if (pattern_val == .text) self.allocator.free(pattern_val.text);
+                const string_val = try self.evalExpr(args[1], tbl, row);
+                defer if (string_val == .text) self.allocator.free(string_val.text);
+                if (pattern_val == .null_val or string_val == .null_val) return .null_val;
+                const pattern_text = self.valueToText(pattern_val);
+                defer self.allocator.free(pattern_text);
+                const string_text = self.valueToText(string_val);
+                defer self.allocator.free(string_text);
+                const matches = try likeMatch(string_text, pattern_text);
+                return .{ .integer = if (matches) 1 else 0 };
+            },
+            .glob_fn => {
+                // GLOB(pattern, string) → 1 if matches, 0 otherwise
+                if (args.len < 2) return .null_val;
+                const pattern_val = try self.evalExpr(args[0], tbl, row);
+                defer if (pattern_val == .text) self.allocator.free(pattern_val.text);
+                const string_val = try self.evalExpr(args[1], tbl, row);
+                defer if (string_val == .text) self.allocator.free(string_val.text);
+                if (pattern_val == .null_val or string_val == .null_val) return .null_val;
+                const pattern_text = self.valueToText(pattern_val);
+                defer self.allocator.free(pattern_text);
+                const string_text = self.valueToText(string_val);
+                defer self.allocator.free(string_text);
+                const matches = try globMatch(string_text, pattern_text);
+                return .{ .integer = if (matches) 1 else 0 };
+            },
         }
     }
 

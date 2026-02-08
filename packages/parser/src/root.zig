@@ -144,6 +144,8 @@ pub const ScalarFunc = enum {
     time_fn,
     datetime_fn,
     strftime_fn,
+    like_fn,
+    glob_fn,
 };
 
 pub const Expr = union(enum) {
@@ -1697,6 +1699,26 @@ pub const Parser = struct {
             _ = try self.expect(.rparen);
             return self.allocExpr(.{ .scalar_func = .{
                 .func = .replace_fn,
+                .args = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            } });
+        }
+
+        // LIKE(pattern, string) / GLOB(pattern, string) as scalar functions
+        if ((tok.type == .kw_like or tok.type == .kw_glob) and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
+            const func_type: ScalarFunc = if (tok.type == .kw_like) .like_fn else .glob_fn;
+            _ = self.advance(); // consume LIKE/GLOB
+            _ = self.advance(); // consume '('
+            var args: std.ArrayList(*const Expr) = .{};
+            while (true) {
+                const arg = try self.parseExpr();
+                args.append(self.allocator, arg) catch return ParseError.OutOfMemory;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                } else break;
+            }
+            _ = try self.expect(.rparen);
+            return self.allocExpr(.{ .scalar_func = .{
+                .func = func_type,
                 .args = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             } });
         }
