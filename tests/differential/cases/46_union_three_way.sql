@@ -1,0 +1,8 @@
+CREATE TABLE t1 (id INTEGER, name TEXT);
+INSERT INTO t1 VALUES (1, 'alice');
+CREATE TABLE t2 (id INTEGER, name TEXT);
+INSERT INTO t2 VALUES (2, 'bob');
+CREATE TABLE t3 (id INTEGER, name TEXT);
+INSERT INTO t3 VALUES (3, 'charlie');
+INSERT INTO t3 VALUES (1, 'alice');
+SELECT id, name FROM t1 UNION SELECT id, name FROM t2 UNION SELECT id, name FROM t3;

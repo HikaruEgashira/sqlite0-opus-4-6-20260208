@@ -1311,7 +1311,7 @@ pub const Parser = struct {
     }
 
     fn reconstructSQL(self: *Parser, tokens: []const Token) ParseError![]const u8 {
-        // Reconstruct SQL from tokens by concatenating lexemes with spaces
+        // Reconstruct SQL from tokens by concatenating lexemes with spaces, appending semicolon
         var result: std.ArrayList(u8) = .{};
         defer result.deinit(self.allocator);
 
@@ -1321,6 +1321,9 @@ pub const Parser = struct {
             }
             result.appendSlice(self.allocator, token.lexeme) catch return ParseError.OutOfMemory;
         }
+
+        // Append semicolon so execute() can parse this as a complete statement
+        result.append(self.allocator, ';') catch return ParseError.OutOfMemory;
 
         return result.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
     }
