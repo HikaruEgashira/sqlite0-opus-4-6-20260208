@@ -112,6 +112,41 @@ pub fn likeMatch(text: []const u8, pattern: []const u8) !bool {
     return text_idx == text.len;
 }
 
+/// GLOB pattern matching (SQL compatible, case-sensitive)
+/// * matches any sequence of characters (0 or more)
+/// ? matches any single character
+pub fn globMatch(text: []const u8, pattern: []const u8) !bool {
+    var text_idx: usize = 0;
+    var pattern_idx: usize = 0;
+
+    while (pattern_idx < pattern.len) {
+        if (pattern[pattern_idx] == '*') {
+            pattern_idx += 1;
+            if (pattern_idx >= pattern.len) return true;
+
+            while (text_idx <= text.len) {
+                if (try globMatch(text[text_idx..], pattern[pattern_idx..])) {
+                    return true;
+                }
+                text_idx += 1;
+            }
+            return false;
+        } else if (pattern[pattern_idx] == '?') {
+            if (text_idx >= text.len) return false;
+            text_idx += 1;
+            pattern_idx += 1;
+        } else {
+            // Match literal character (case-sensitive)
+            if (text_idx >= text.len) return false;
+            if (text[text_idx] != pattern[pattern_idx]) return false;
+            text_idx += 1;
+            pattern_idx += 1;
+        }
+    }
+
+    return text_idx == text.len;
+}
+
 pub fn rowsEqual(a: Row, b: Row) bool {
     if (a.values.len != b.values.len) return false;
     for (a.values, b.values) |va, vb| {

@@ -37,6 +37,7 @@ const dupeStr = value_mod.dupeStr;
 const compareValuesOrder = value_mod.compareValuesOrder;
 const rowsEqual = value_mod.rowsEqual;
 const likeMatch = value_mod.likeMatch;
+const globMatch = value_mod.globMatch;
 
 pub const Database = struct {
     tables: std.StringHashMap(Table),
@@ -261,6 +262,19 @@ pub const Database = struct {
                     return .{ .integer = if (matches) 1 else 0 };
                 }
 
+                // GLOB operator (case-sensitive)
+                if (bin.op == .glob) {
+                    if (left_val == .null_val or right_val == .null_val) return .null_val;
+
+                    const left_text = self.valueToText(left_val);
+                    defer self.allocator.free(left_text);
+                    const right_text = self.valueToText(right_val);
+                    defer self.allocator.free(right_text);
+
+                    const matches = try globMatch(left_text, right_text);
+                    return .{ .integer = if (matches) 1 else 0 };
+                }
+
                 // For other operators, NULL propagation applies
                 if (left_val == .null_val or right_val == .null_val) return .null_val;
 
@@ -288,7 +302,7 @@ pub const Database = struct {
                             else => unreachable,
                         } };
                     },
-                    .eq, .ne, .lt, .le, .gt, .ge, .like, .logical_and, .logical_or => unreachable,
+                    .eq, .ne, .lt, .le, .gt, .ge, .like, .glob, .logical_and, .logical_or => unreachable,
                 }
             },
             .aggregate => {

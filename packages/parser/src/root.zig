@@ -77,6 +77,7 @@ pub const BinOp = enum {
     gt, // >
     ge, // >=
     like, // LIKE pattern matching
+    glob, // GLOB pattern matching (case-sensitive)
     logical_and, // AND
     logical_or, // OR
 };
@@ -742,6 +743,7 @@ pub const Parser = struct {
                 .greater_than => .gt,
                 .greater_equal => .ge,
                 .kw_like => .like,
+                .kw_glob => .glob,
                 else => null,
             };
 
