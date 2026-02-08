@@ -1,0 +1,19 @@
+CREATE TABLE t1 (id INTEGER, name TEXT, val INTEGER);
+INSERT INTO t1 VALUES (1, 'alice', -10);
+INSERT INTO t1 VALUES (2, 'bob', 20);
+INSERT INTO t1 VALUES (3, 'carol', -30);
+INSERT INTO t1 VALUES (4, 'dave', 40);
+
+-- DELETE with expression in WHERE
+DELETE FROM t1 WHERE ABS(val) > 25;
+SELECT * FROM t1 ORDER BY id;
+
+-- DELETE with AND/OR
+INSERT INTO t1 VALUES (5, 'eve', 50);
+INSERT INTO t1 VALUES (6, 'frank', 60);
+DELETE FROM t1 WHERE val > 30 OR name = 'alice';
+SELECT * FROM t1 ORDER BY id;
+
+-- DELETE with UPPER
+DELETE FROM t1 WHERE UPPER(name) = 'BOB';
+SELECT * FROM t1 ORDER BY id;
