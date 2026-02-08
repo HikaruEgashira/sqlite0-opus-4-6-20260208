@@ -2523,6 +2523,7 @@ pub const Database = struct {
                         .col_type = col.col_type,
                         .is_primary_key = col.is_primary_key,
                         .default_value = col.default_value,
+                        .not_null = col.not_null,
                     };
                 }
                 var table = Table.init(self.allocator, table_name, columns);

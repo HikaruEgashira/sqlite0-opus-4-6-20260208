@@ -1,0 +1,5 @@
+-- NOT NULL constraint parsing test
+CREATE TABLE t1 (id INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, age INTEGER);
+INSERT INTO t1 VALUES (1, 'alice', 25);
+INSERT INTO t1 VALUES (2, 'bob', NULL);
+SELECT * FROM t1 ORDER BY id;
