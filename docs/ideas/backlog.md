@@ -1,115 +1,12 @@
 # 開発アイデア
 
 ## SQLサポート拡張
-- ~~WHERE句の実装（比較演算子: =, <, >, <=, >=, !=）~~ ✓
-- ~~DELETE文~~ ✓
-- ~~UPDATE文~~ ✓
-- ~~DROP TABLE文~~ ✓
-- ~~ORDER BY / GROUP BY~~ ✓
-- ~~集約関数 (COUNT, SUM, AVG, MIN, MAX)~~ ✓
-- ~~LIMIT / OFFSET~~ ✓
-- ~~JOIN (INNER JOIN, LEFT JOIN)~~ ✓
-- ~~WHERE句の拡張（AND/OR）~~ ✓
-- ~~サブクエリ~~ ✓
-- ~~HAVING句~~ ✓
-- ~~DISTINCT~~ ✓
-- ~~NULL値の適切なハンドリング~~ ✓
-- ~~ALTER TABLE~~ ✓
-- ~~Expression Evaluation（算術式、文字列結合、括弧）~~ ✓
-- ~~INSERT INTO ... SELECT~~ ✓
-- ~~CASE WHEN式~~ ✓
-- ~~LIKE演算子~~ ✓ / ~~GLOB演算子~~ ✓
-- ~~UNION / UNION ALL / INTERSECT / EXCEPT~~ ✓
-- ~~複数カラムのUPDATE SET~~ ✓
-- ~~比較演算子を式として使用~~ ✓
-- ~~WHERE句の式ベース化（AND/ORを含む完全なExpr化）~~ ✓
-- ~~NOT演算子（NOT expr, NOT LIKE, NOT IN, NOT BETWEEN）~~ ✓
-- ~~BETWEEN演算子~~ ✓
-- ~~多行INSERT VALUES~~ ✓
-- ~~単項マイナス演算子~~ ✓
-- ~~剰余演算子 (%)~~ ✓
-- ~~SQLコメント (--)~~ ✓
-- ~~CREATE TABLE IF NOT EXISTS / DROP TABLE IF EXISTS~~ ✓
-- ~~COALESCE / NULLIF 関数~~ ✓
-- ~~ABS / LENGTH / UPPER / LOWER / TRIM / TYPEOF 関数~~ ✓
-- ~~テーブルなしSELECT（SELECT 1+2; SELECT ABS(-10);）~~ ✓
-- ~~MAX / MIN スカラー関数（複数引数）~~ ✓
-- ~~カラムエイリアス（AS）~~ ✓
-- ~~IIF 関数~~ ✓
-- ~~型キャスト（CAST）~~ ✓
-- ~~REPLACE文~~ ✓
-- ~~SUBSTR / INSTR / REPLACE関数~~ ✓
-- ~~GROUP_CONCAT集約関数~~ ✓
-- ~~INSERT OR IGNORE / INSERT OR REPLACE~~ ✓
-- ~~HEX / UNICODE / CHAR / ZEROBLOB / PRINTF関数~~ ✓
-- ~~UPDATE SET col = expr（式による更新）~~ ✓
-- ~~複数ORDER BYカラム~~ ✓
-- ~~COUNT(DISTINCT col)~~ ✓
-- ~~IN (val1, val2, ...) 値リスト~~ ✓
-- ~~ORDER BY式サポート~~ ✓
-- ~~テーブルエイリアス~~ ✓
-- ~~CROSS JOIN / カンマ区切りFROM~~ ✓
-- ~~ROUND / IFNULL / RANDOM 関数~~ ✓
-- ~~TOTAL集約関数~~ ✓
-- ~~EXISTS / NOT EXISTS サブクエリ~~ ✓
-- ~~SUM(DISTINCT) / AVG(DISTINCT) / GROUP_CONCAT(DISTINCT)~~ ✓
-- ~~RIGHT JOIN~~ ✓
-- ~~DEFAULT値（CREATE TABLE + INSERT列リスト）~~ ✓
-- ~~ビット演算子 (&, |, ~, <<, >>)~~ ✓
-- ~~CHECK制約~~ ✓
-- ~~AUTOINCREMENT~~ ✓
-- ~~浮動小数点リテラル・REAL列型~~ ✓
-- ~~LEFT/RIGHT OUTER JOIN構文~~ ✓
-- ~~Date/Time関数 (datetime, date, strftime)~~ ✓
-- ~~FULL OUTER JOIN~~ ✓
-- ~~Window関数 (ROW_NUMBER, RANK, DENSE_RANK)~~ ✓
-- ~~NATURAL JOIN~~ ✓
-- ~~CREATE TABLE AS SELECT~~ ✓
-- ~~<>演算子~~ ✓
-- ~~外部キー (FOREIGN KEY)~~ ✓ (構文パース対応)
-- ~~PARTITION BY (Window関数)~~ ✓
-- ~~SUM/AVG OVER (Window集約)~~ ✓
-- ~~Window running aggregates (SUM/AVG OVER ORDER BY)~~ ✓
-- ~~Math functions (CEIL, FLOOR, SQRT, POWER, LOG, etc.)~~ ✓
-- ~~RETURNING clause (INSERT/UPDATE/DELETE)~~ ✓
-- ~~JOIN DISTINCT / LIMIT / OFFSET~~ ✓
-- ~~JOIN式評価（SELECT e.salary * 12 FROM e JOIN d ...）~~ ✓
-- ~~マルチラインREPL~~ ✓
 - GENERATED COLUMNS
-- ~~UPSERT (ON CONFLICT)~~ ✓
-- ~~Common Table Expressions (WITH/CTE)~~ ✓
-- ~~INSERT INTO ... DEFAULT VALUES~~ ✓
-- ~~NULLS FIRST/LAST in ORDER BY~~ ✓
-- ~~Simple CASE expression~~ ✓
-- ~~LAG/LEAD/NTILE/FIRST_VALUE/LAST_VALUE Window関数~~ ✓
-- ~~LIKE()/GLOB() スカラー関数~~ ✓
-- ~~クォート識別子 ("name", `name`)~~ ✓
-- ~~WITH RECURSIVE（再帰CTE）~~ ✓
-- ~~GROUP BY式サポート~~ ✓
-- ~~JOIN結果の集約関数~~ ✓
-- ~~LIMIT/OFFSETの集約クエリ対応~~ ✓
-- ~~CREATE VIEW / DROP VIEW~~ ✓
-- ~~FROM句サブクエリ（導出テーブル）~~ ✓
-- ~~UNIQUE制約構文~~ ✓
-- ~~複合PRIMARY KEY~~ ✓
-- ~~ORDER BY列位置番号（ORDER BY 2 DESC）~~ ✓
-- ~~GROUP BY列位置番号（GROUP BY 1, 2）~~ ✓
-- ~~SUM/AVG/TOTAL浮動小数点対応~~ ✓
-- ~~型なしカラム（CREATE TABLE t (val)）~~ ✓
-- ~~VALUES式（INSERT VALUES (1+'a'||'b', UPPER('x'))）~~ ✓
-- ~~集約式（SUM(val)*2, ROUND(AVG(val)), CASE WHEN SUM > x）~~ ✓
-- ~~相関サブクエリ（correlated subqueries）~~ ✓
-- ~~qualified_ref集約（COUNT(t.id), SUM(t.val)）~~ ✓
-- ~~LEFT JOIN COUNT NULL修正（COUNT(right.col) = 0 for unmatched）~~ ✓
-- ~~PRAGMA table_info / table_list~~ ✓
-- ~~sqlite_master / sqlite_schema 仮想テーブル~~ ✓
-- ~~LIMIT offset, count 構文~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
 - SQLite3互換のファイルフォーマット ← Phase 6e
 - WAL (Write-Ahead Logging) ← Phase 6f
-- ~~トランザクション (BEGIN/COMMIT/ROLLBACK)~~ ✓
 
 ## 品質保証
 - プロパティベーステスト（ランダムSQL生成 + Differential Testing）
@@ -119,9 +16,6 @@
 
 ## 開発体験
 - エラーメッセージの改善
-- ~~.schema コマンド~~ ✓
-- ~~.tables コマンド~~ ✓
-- .quit / .exit コマンド ✓
 - EXPLAIN 相当の機能
 
 ## 将来構想
