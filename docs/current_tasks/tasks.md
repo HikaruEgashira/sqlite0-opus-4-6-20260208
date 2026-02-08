@@ -101,6 +101,19 @@
 - [x] IS NULL / IS NOT NULL テスト追加
 - Differential Test: **123/123 passing**
 
+### Phase 6d-12: バグ修正・品質向上（完了）
+- [x] SQLite互換float format (%.15g: 15有効桁+丸め)
+- [x] SUBSTRの負のインデックス・負のlength対応
+- [x] GROUP BY式サポート（GROUP BY UPPER(name), id % 2）
+- [x] GROUP BY結果のORDER BY（エイリアス解決付き）
+- [x] JOIN結果の集約関数（COUNT/SUM/MAX + JOIN）
+- [x] MIN/MAX集約関数のNULLスキップ
+- [x] LIMIT/OFFSETのGROUP BY集約への適用
+- [x] 集約関数キーワードをidentifierとしても使用可能（ORDER BY total等）
+- [x] テーブルなしSELECTのORDER BY/LIMIT/OFFSET対応
+- [x] 差分テスト追加: float format, SUBSTR負数, GROUP BY式, NULL処理, 型変換, 空テーブル, ネスト関数, CASE式, JOIN集約, LIMIT集約, BETWEEN, 文字列操作
+- Differential Test: **140/140 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）

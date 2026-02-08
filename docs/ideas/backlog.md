@@ -79,6 +79,9 @@
 - ~~LIKE()/GLOB() スカラー関数~~ ✓
 - ~~クォート識別子 ("name", `name`)~~ ✓
 - ~~WITH RECURSIVE（再帰CTE）~~ ✓
+- ~~GROUP BY式サポート~~ ✓
+- ~~JOIN結果の集約関数~~ ✓
+- ~~LIMIT/OFFSETの集約クエリ対応~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
