@@ -568,8 +568,17 @@ pub const Parser = struct {
                 .kw_integer => "INTEGER",
                 .kw_text => "TEXT",
                 .kw_real => "REAL",
+                .identifier => self.mapColumnType(col_type_tok.lexeme),
                 else => return ParseError.UnexpectedToken,
             };
+            // Skip optional (N) or (N,M) for VARCHAR(N), DECIMAL(P,S), etc.
+            if (col_type_tok.type == .identifier and self.peek().type == .lparen) {
+                _ = self.advance();
+                while (self.peek().type != .rparen and self.peek().type != .eof) {
+                    _ = self.advance();
+                }
+                _ = try self.expect(.rparen);
+            }
 
             var is_pk = false;
             var default_val: ?[]const u8 = null;
@@ -663,6 +672,27 @@ pub const Parser = struct {
                 .if_not_exists = if_not_exists,
             },
         };
+    }
+
+    /// Map an identifier type name to a SQLite affinity
+    fn mapColumnType(_: *Parser, name: []const u8) []const u8 {
+        if (std.ascii.eqlIgnoreCase(name, "INT") or
+            std.ascii.eqlIgnoreCase(name, "TINYINT") or
+            std.ascii.eqlIgnoreCase(name, "SMALLINT") or
+            std.ascii.eqlIgnoreCase(name, "MEDIUMINT") or
+            std.ascii.eqlIgnoreCase(name, "BIGINT") or
+            std.ascii.eqlIgnoreCase(name, "BOOLEAN") or
+            std.ascii.eqlIgnoreCase(name, "NUMERIC"))
+        {
+            return "INTEGER";
+        } else if (std.ascii.eqlIgnoreCase(name, "DOUBLE") or
+            std.ascii.eqlIgnoreCase(name, "FLOAT") or
+            std.ascii.eqlIgnoreCase(name, "DECIMAL"))
+        {
+            return "REAL";
+        }
+        // VARCHAR, CHAR, CLOB, BLOB, NCHAR, NVARCHAR, and anything else → TEXT
+        return "TEXT";
     }
 
     /// Skip a table-level constraint: FOREIGN KEY(...) REFERENCES ...,
@@ -2450,8 +2480,17 @@ pub const Parser = struct {
                 .kw_integer => "INTEGER",
                 .kw_text => "TEXT",
                 .kw_real => "REAL",
+                .identifier => self.mapColumnType(col_type_tok.lexeme),
                 else => return ParseError.UnexpectedToken,
             };
+            // Skip optional (N) for VARCHAR(N) etc.
+            if (self.peek().type == .lparen) {
+                _ = self.advance();
+                while (self.peek().type != .rparen and self.peek().type != .eof) {
+                    _ = self.advance();
+                }
+                _ = try self.expect(.rparen);
+            }
             _ = try self.expect(.semicolon);
             return Statement{ .alter_table = .{ .add_column = .{
                 .table_name = name_tok.lexeme,
