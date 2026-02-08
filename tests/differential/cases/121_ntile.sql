@@ -1,0 +1,17 @@
+-- NTILE window function
+CREATE TABLE t (id INTEGER, val INTEGER);
+INSERT INTO t VALUES (1, 10);
+INSERT INTO t VALUES (2, 20);
+INSERT INTO t VALUES (3, 30);
+INSERT INTO t VALUES (4, 40);
+INSERT INTO t VALUES (5, 50);
+INSERT INTO t VALUES (6, 60);
+
+-- NTILE(2) - split into 2 groups
+SELECT id, val, NTILE(2) OVER (ORDER BY id) AS grp FROM t ORDER BY id;
+
+-- NTILE(3)
+SELECT id, val, NTILE(3) OVER (ORDER BY id) AS grp FROM t ORDER BY id;
+
+-- NTILE(4)
+SELECT id, val, NTILE(4) OVER (ORDER BY id) AS grp FROM t ORDER BY id;

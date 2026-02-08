@@ -204,7 +204,9 @@ pub const Expr = union(enum) {
     },
     window_func: struct {
         func: WindowFunc,
-        arg: ?*const Expr = null, // argument for aggregate window functions (SUM, AVG, etc.)
+        arg: ?*const Expr = null, // argument for aggregate/value window functions
+        offset: i64 = 1, // LAG/LEAD offset, NTILE bucket count
+        default_val: ?*const Expr = null, // LAG/LEAD default value
         partition_by: []const []const u8, // PARTITION BY columns (empty if none)
         order_by: []const OrderByItem, // ORDER BY items in OVER clause
     },
@@ -220,6 +222,11 @@ pub const WindowFunc = enum {
     win_min,
     win_max,
     win_total,
+    lag,
+    lead,
+    ntile,
+    first_value,
+    last_value,
 };
 
 pub const CastType = enum {
@@ -1761,15 +1768,54 @@ pub const Parser = struct {
             return self.allocExpr(.{ .cast = .{ .operand = operand, .target_type = target_type } });
         }
 
-        // Window function: ROW_NUMBER() OVER (...), RANK() OVER (...), DENSE_RANK() OVER (...)
+        // Window function: ROW_NUMBER() OVER (...), LAG(col, offset, default) OVER (...), etc.
         if (tok.type == .identifier and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
             if (classifyWindowFunc(tok.lexeme)) |wfunc| {
                 _ = self.advance(); // consume function name
                 _ = self.advance(); // consume '('
-                _ = try self.expect(.rparen); // window funcs take no args
+                var wf_arg: ?*const Expr = null;
+                var wf_offset: i64 = 1;
+                var wf_default: ?*const Expr = null;
+                switch (wfunc) {
+                    .row_number, .rank, .dense_rank => {
+                        _ = try self.expect(.rparen);
+                    },
+                    .lag, .lead => {
+                        // LAG/LEAD(expr [, offset [, default]])
+                        wf_arg = try self.parseExpr();
+                        if (self.peek().type == .comma) {
+                            _ = self.advance();
+                            const offset_expr = try self.parseExpr();
+                            if (offset_expr.* == .integer_literal) {
+                                wf_offset = offset_expr.integer_literal;
+                            }
+                        }
+                        if (self.peek().type == .comma) {
+                            _ = self.advance();
+                            wf_default = try self.parseExpr();
+                        }
+                        _ = try self.expect(.rparen);
+                    },
+                    .ntile => {
+                        // NTILE(n)
+                        const n_expr = try self.parseExpr();
+                        if (n_expr.* == .integer_literal) {
+                            wf_offset = n_expr.integer_literal;
+                        }
+                        _ = try self.expect(.rparen);
+                    },
+                    .first_value, .last_value => {
+                        // FIRST_VALUE/LAST_VALUE(expr)
+                        wf_arg = try self.parseExpr();
+                        _ = try self.expect(.rparen);
+                    },
+                    else => {
+                        _ = try self.expect(.rparen);
+                    },
+                }
                 _ = try self.expect(.kw_over);
                 _ = try self.expect(.lparen);
-                return self.parseWindowOverClause(wfunc, null);
+                return self.parseWindowOverClauseEx(wfunc, wf_arg, wf_offset, wf_default);
             }
         }
 
@@ -1882,6 +1928,7 @@ pub const Parser = struct {
             },
             .window_func => |wf| {
                 if (wf.arg) |a| freeExpr(allocator, a);
+                if (wf.default_val) |d| freeExpr(allocator, d);
                 allocator.free(wf.partition_by);
                 for (wf.order_by) |item| {
                     if (item.expr) |e| freeExpr(allocator, e);
@@ -1947,6 +1994,11 @@ pub const Parser = struct {
             .{ "ROW_NUMBER", WindowFunc.row_number },
             .{ "RANK", WindowFunc.rank },
             .{ "DENSE_RANK", WindowFunc.dense_rank },
+            .{ "LAG", WindowFunc.lag },
+            .{ "LEAD", WindowFunc.lead },
+            .{ "NTILE", WindowFunc.ntile },
+            .{ "FIRST_VALUE", WindowFunc.first_value },
+            .{ "LAST_VALUE", WindowFunc.last_value },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {
@@ -1956,8 +2008,8 @@ pub const Parser = struct {
         return null;
     }
 
-    /// Parse OVER clause internals (PARTITION BY ... ORDER BY ...) - lparen already consumed
-    fn parseWindowOverClause(self: *Parser, wfunc: WindowFunc, arg: ?*const Expr) ParseError!*const Expr {
+    /// Parse OVER clause internals with full parameters
+    fn parseWindowOverClauseEx(self: *Parser, wfunc: WindowFunc, arg: ?*const Expr, offset: i64, default_val: ?*const Expr) ParseError!*const Expr {
         // Parse optional PARTITION BY
         var partition_by: std.ArrayList([]const u8) = .{};
         if (self.peek().type == .kw_partition) {
@@ -2000,9 +2052,16 @@ pub const Parser = struct {
         return self.allocExpr(.{ .window_func = .{
             .func = wfunc,
             .arg = arg,
+            .offset = offset,
+            .default_val = default_val,
             .partition_by = partition_by.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             .order_by = order_items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
         } });
+    }
+
+    /// Parse OVER clause internals (PARTITION BY ... ORDER BY ...) - lparen already consumed
+    fn parseWindowOverClause(self: *Parser, wfunc: WindowFunc, arg: ?*const Expr) ParseError!*const Expr {
+        return self.parseWindowOverClauseEx(wfunc, arg, 1, null);
     }
 
     fn parseCompOp(self: *Parser) ParseError!CompOp {

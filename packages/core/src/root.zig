@@ -1408,8 +1408,10 @@ pub const Database = struct {
                     .dense_rank => {
                         proj_values[idx][col_idx] = .{ .integer = dense_rank };
                     },
-                    .win_sum, .win_avg, .win_count, .win_min, .win_max, .win_total => {
-                        // Aggregate window functions are computed per-partition below
+                    .win_sum, .win_avg, .win_count, .win_min, .win_max, .win_total,
+                    .lag, .lead, .ntile, .first_value, .last_value,
+                    => {
+                        // Computed per-partition below
                     },
                 }
 
@@ -1417,10 +1419,13 @@ pub const Database = struct {
                 prev_partition = idx;
             }
 
-            // For aggregate window functions, compute per-partition aggregates
+            // For aggregate/value window functions, compute per-partition
             switch (wf.func) {
                 .win_sum, .win_avg, .win_count, .win_min, .win_max, .win_total => {
                     try self.computeWindowAggregates(wf, indices, col_idx, tbl, src_rows, proj_values, proj_rows);
+                },
+                .lag, .lead, .ntile, .first_value, .last_value => {
+                    try self.computeWindowValueFunctions(wf, indices, col_idx, tbl, src_rows, proj_values, proj_rows);
                 },
                 else => {},
             }
@@ -1512,6 +1517,115 @@ pub const Database = struct {
                 const row_idx = indices[i];
                 proj_values[row_idx][col_idx] = result;
                 proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+            }
+
+            part_start = part_end;
+        }
+    }
+
+    fn computeWindowValueFunctions(
+        self: *Database,
+        wf: anytype,
+        indices: []const usize,
+        col_idx: usize,
+        tbl: *const Table,
+        src_rows: []const Row,
+        proj_values: [][]Value,
+        proj_rows: []Row,
+    ) !void {
+        // Process rows in sorted order, group into partitions
+        var part_start: usize = 0;
+        while (part_start < indices.len) {
+            var part_end = part_start + 1;
+            while (part_end < indices.len) {
+                var same_partition = true;
+                for (wf.partition_by) |pcol| {
+                    const pi = tbl.findColumnIndex(pcol) orelse continue;
+                    if (compareValuesOrder(src_rows[indices[part_start]].values[pi], src_rows[indices[part_end]].values[pi]) != .eq) {
+                        same_partition = false;
+                        break;
+                    }
+                }
+                if (!same_partition) break;
+                part_end += 1;
+            }
+
+            const part_len = part_end - part_start;
+
+            switch (wf.func) {
+                .lag => {
+                    const offset: usize = @intCast(@max(wf.offset, 0));
+                    for (part_start..part_end) |i| {
+                        const row_idx = indices[i];
+                        const pos_in_part = i - part_start;
+                        if (pos_in_part >= offset) {
+                            const src_idx = indices[i - offset];
+                            const val = if (wf.arg) |arg_expr| (self.evalExpr(arg_expr, tbl, src_rows[src_idx]) catch .null_val) else .null_val;
+                            proj_values[row_idx][col_idx] = val;
+                        } else {
+                            // Use default value
+                            const val = if (wf.default_val) |def_expr| (self.evalExpr(def_expr, tbl, src_rows[row_idx]) catch .null_val) else .null_val;
+                            proj_values[row_idx][col_idx] = val;
+                        }
+                        proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                    }
+                },
+                .lead => {
+                    const offset: usize = @intCast(@max(wf.offset, 0));
+                    for (part_start..part_end) |i| {
+                        const row_idx = indices[i];
+                        const pos_in_part = i - part_start;
+                        if (pos_in_part + offset < part_len) {
+                            const src_idx = indices[i + offset];
+                            const val = if (wf.arg) |arg_expr| (self.evalExpr(arg_expr, tbl, src_rows[src_idx]) catch .null_val) else .null_val;
+                            proj_values[row_idx][col_idx] = val;
+                        } else {
+                            const val = if (wf.default_val) |def_expr| (self.evalExpr(def_expr, tbl, src_rows[row_idx]) catch .null_val) else .null_val;
+                            proj_values[row_idx][col_idx] = val;
+                        }
+                        proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                    }
+                },
+                .ntile => {
+                    const n: usize = @intCast(@max(wf.offset, 1));
+                    // SQLite NTILE: first (part_len % n) tiles get (part_len/n + 1) rows, rest get (part_len/n)
+                    const base_size = part_len / n;
+                    const extra = part_len % n;
+                    var pos: usize = 0;
+                    var tile: i64 = 1;
+                    for (part_start..part_end) |i| {
+                        const row_idx = indices[i];
+                        const cur_tile_size = base_size + @as(usize, if (@as(usize, @intCast(tile - 1)) < extra) 1 else 0);
+                        proj_values[row_idx][col_idx] = .{ .integer = tile };
+                        proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                        pos += 1;
+                        if (pos >= cur_tile_size) {
+                            tile += 1;
+                            pos = 0;
+                        }
+                    }
+                },
+                .first_value => {
+                    // First value in partition
+                    const first_idx = indices[part_start];
+                    const val = if (wf.arg) |arg_expr| (self.evalExpr(arg_expr, tbl, src_rows[first_idx]) catch .null_val) else .null_val;
+                    for (part_start..part_end) |i| {
+                        const row_idx = indices[i];
+                        proj_values[row_idx][col_idx] = val;
+                        proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                    }
+                },
+                .last_value => {
+                    // Last value in partition
+                    const last_idx = indices[part_end - 1];
+                    const val = if (wf.arg) |arg_expr| (self.evalExpr(arg_expr, tbl, src_rows[last_idx]) catch .null_val) else .null_val;
+                    for (part_start..part_end) |i| {
+                        const row_idx = indices[i];
+                        proj_values[row_idx][col_idx] = val;
+                        proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                    }
+                },
+                else => {},
             }
 
             part_start = part_end;
