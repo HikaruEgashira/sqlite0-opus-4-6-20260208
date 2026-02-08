@@ -2987,10 +2987,20 @@ pub const Database = struct {
             var ob_descs = try self.allocator.alloc(bool, order_by.items.len);
             defer self.allocator.free(ob_descs);
             var all_resolved = true;
+            const n_proj_cols = sel.select_exprs.len;
             for (order_by.items, 0..) |item, oi| {
                 ob_descs[oi] = item.order == .desc;
                 var col_idx: ?usize = null;
-                if (item.column.len > 0) {
+                // Check for ORDER BY column position (e.g., ORDER BY 2)
+                if (item.expr) |e| {
+                    if (e.* == .integer_literal) {
+                        const pos = e.integer_literal;
+                        if (pos >= 1 and pos <= @as(i64, @intCast(n_proj_cols))) {
+                            col_idx = @intCast(pos - 1);
+                        }
+                    }
+                }
+                if (col_idx == null and item.column.len > 0) {
                     // Check aliases first
                     for (sel.aliases, 0..) |alias, ai| {
                         if (alias) |a| {
@@ -3469,7 +3479,16 @@ pub const Database = struct {
             for (order_by.items, 0..) |item, oi| {
                 ob_descs[oi] = item.order == .desc;
                 var col_idx: ?usize = null;
-                if (item.column.len > 0) {
+                // Check for ORDER BY column position (e.g., ORDER BY 2)
+                if (item.expr) |e| {
+                    if (e.* == .integer_literal) {
+                        const pos = e.integer_literal;
+                        if (pos >= 1 and pos <= @as(i64, @intCast(expr_count))) {
+                            col_idx = @intCast(pos - 1);
+                        }
+                    }
+                }
+                if (col_idx == null and item.column.len > 0) {
                     // Check aliases first
                     for (sel.aliases, 0..) |alias, ai| {
                         if (alias) |a| {
@@ -3820,6 +3839,36 @@ pub const Database = struct {
 
                 if (item.expr) |e| {
                     switch (e.*) {
+                        .integer_literal => |pos| {
+                            // ORDER BY position refers to SELECT output column, resolve to combined column index
+                            if (pos >= 1 and pos <= @as(i64, @intCast(sel.columns.len))) {
+                                const sel_idx: usize = @intCast(pos - 1);
+                                // Resolve the SELECT column to combined column index
+                                if (sel_idx < sel.result_exprs.len) {
+                                    const re = sel.result_exprs[sel_idx];
+                                    if (re.* == .qualified_ref) {
+                                        const qr2 = re.qualified_ref;
+                                        for (alias_offsets.items) |ao| {
+                                            if (std.mem.eql(u8, qr2.table, ao.alias) or std.mem.eql(u8, qr2.table, ao.name)) {
+                                                if (ao.table.findColumnIndex(qr2.column)) |ci| col_idx = ao.offset + ci;
+                                                break;
+                                            }
+                                        }
+                                    } else if (re.* == .column_ref) {
+                                        for (combined_cols_list.items, 0..) |col, ci| {
+                                            if (std.mem.eql(u8, col.name, re.column_ref)) { col_idx = ci; break; }
+                                        }
+                                    }
+                                }
+                                // Fallback: check sel.columns directly
+                                if (col_idx == null) {
+                                    const sc = sel.columns[sel_idx];
+                                    for (combined_cols_list.items, 0..) |col, ci| {
+                                        if (std.mem.eql(u8, col.name, sc)) { col_idx = ci; break; }
+                                    }
+                                }
+                            }
+                        },
                         .qualified_ref => |qr| {
                             for (alias_offsets.items) |ao| {
                                 if (std.mem.eql(u8, qr.table, ao.alias) or std.mem.eql(u8, qr.table, ao.name)) {
@@ -4396,7 +4445,21 @@ pub const Database = struct {
                 var keys = try self.allocator.alloc(Value, n_keys);
                 for (items, 0..) |item, ki| {
                     if (item.expr) |expr| {
-                        keys[ki] = try self.evalExpr(expr, tbl, row);
+                        // Handle ORDER BY column position (e.g., ORDER BY 2)
+                        if (expr.* == .integer_literal) {
+                            const pos = expr.integer_literal;
+                            if (pos >= 1 and pos <= @as(i64, @intCast(tbl.columns.len))) {
+                                const ci: usize = @intCast(pos - 1);
+                                keys[ki] = row.values[ci];
+                                if (keys[ki] == .text) {
+                                    keys[ki] = .{ .text = try dupeStr(self.allocator, keys[ki].text) };
+                                }
+                            } else {
+                                keys[ki] = .null_val;
+                            }
+                        } else {
+                            keys[ki] = try self.evalExpr(expr, tbl, row);
+                        }
                     } else {
                         const col_idx = tbl.findColumnIndex(item.column) orelse {
                             keys[ki] = .null_val;
