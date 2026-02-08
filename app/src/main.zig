@@ -51,6 +51,44 @@ pub fn main() !void {
 
         if (line.len == 0) continue;
 
+        // Handle dot-commands
+        if (line.len > 0 and line[0] == '.') {
+            if (std.mem.eql(u8, line, ".tables")) {
+                var it = db.tables.keyIterator();
+                while (it.next()) |key| {
+                    try writeAll(stdout, key.*);
+                    try writeAll(stdout, "\n");
+                }
+                continue;
+            } else if (std.mem.eql(u8, line, ".schema")) {
+                var it = db.tables.iterator();
+                while (it.next()) |entry| {
+                    try writeAll(stdout, "CREATE TABLE ");
+                    try writeAll(stdout, entry.key_ptr.*);
+                    try writeAll(stdout, " (");
+                    for (entry.value_ptr.columns, 0..) |col, ci| {
+                        if (ci > 0) try writeAll(stdout, ", ");
+                        try writeAll(stdout, col.name);
+                        try writeAll(stdout, " ");
+                        try writeAll(stdout, col.col_type);
+                        if (col.is_primary_key) try writeAll(stdout, " PRIMARY KEY");
+                        if (col.not_null) try writeAll(stdout, " NOT NULL");
+                        if (col.is_unique) try writeAll(stdout, " UNIQUE");
+                    }
+                    try writeAll(stdout, ");\n");
+                }
+                continue;
+            } else if (std.mem.eql(u8, line, ".quit") or std.mem.eql(u8, line, ".exit")) {
+                try writeAll(stdout, "Bye!\n");
+                return;
+            } else {
+                try writeAll(stdout, "Unknown command: ");
+                try writeAll(stdout, line);
+                try writeAll(stdout, "\n");
+                continue;
+            }
+        }
+
         const result = db.execute(line) catch |err| {
             try printStr(stdout, "Error: {}\n", .{err});
             continue;
