@@ -639,6 +639,66 @@ pub const Database = struct {
                 self.allocator.free(to);
                 return .{ .text = result };
             },
+            .hex => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                defer if (val == .text) self.allocator.free(val.text);
+                // Convert each byte to 2-char hex
+                var hex_buf = self.allocator.alloc(u8, text.len * 2) catch {
+                    self.allocator.free(text);
+                    return .null_val;
+                };
+                for (text, 0..) |byte, i| {
+                    const hex_chars = "0123456789ABCDEF";
+                    hex_buf[i * 2] = hex_chars[byte >> 4];
+                    hex_buf[i * 2 + 1] = hex_chars[byte & 0x0F];
+                }
+                self.allocator.free(text);
+                return .{ .text = hex_buf };
+            },
+            .unicode_fn => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                const text = self.valueToText(val);
+                defer if (val == .text) self.allocator.free(val.text);
+                defer self.allocator.free(text);
+                if (text.len == 0) return .null_val;
+                return .{ .integer = @intCast(text[0]) };
+            },
+            .char_fn => {
+                var result: std.ArrayList(u8) = .{};
+                for (args) |arg| {
+                    const val = try self.evalExpr(arg, tbl, row);
+                    defer if (val == .text) self.allocator.free(val.text);
+                    const n = self.valueToI64(val) orelse continue;
+                    if (n >= 0 and n <= 127) {
+                        result.append(self.allocator, @intCast(@as(u64, @intCast(n)))) catch return .null_val;
+                    }
+                }
+                return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+            },
+            .zeroblob => {
+                // ZEROBLOB(n) returns n zero bytes - simplified as text of n zeroes
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                const n = self.valueToI64(val) orelse return .null_val;
+                if (n <= 0) return .{ .text = try dupeStr(self.allocator, "") };
+                const buf = self.allocator.alloc(u8, @intCast(n)) catch return .null_val;
+                @memset(buf, 0);
+                return .{ .text = buf };
+            },
+            .printf_fn => {
+                // Simplified PRINTF: just evaluate and return as text
+                if (args.len == 0) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .text) return val;
+                if (val == .null_val) return .null_val;
+                return .{ .text = self.valueToText(val) };
+            },
         }
     }
 

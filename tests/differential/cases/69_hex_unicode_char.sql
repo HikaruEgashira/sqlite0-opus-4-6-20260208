@@ -1,0 +1,13 @@
+-- HEX function
+SELECT HEX('ABC');
+SELECT HEX('hello');
+
+-- UNICODE function
+SELECT UNICODE('A');
+SELECT UNICODE('a');
+SELECT UNICODE('0');
+
+-- CHAR function
+SELECT CHAR(65);
+SELECT CHAR(65, 66, 67);
+SELECT CHAR(72, 101, 108, 108, 111);

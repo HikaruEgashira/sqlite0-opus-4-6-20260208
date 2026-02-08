@@ -111,6 +111,11 @@ pub const ScalarFunc = enum {
     substr,
     instr,
     replace_fn,
+    hex,
+    unicode_fn,
+    char_fn,
+    zeroblob,
+    printf_fn,
 };
 
 pub const Expr = union(enum) {
@@ -1360,6 +1365,11 @@ pub const Parser = struct {
             .{ "SUBSTRING", ScalarFunc.substr },
             .{ "INSTR", ScalarFunc.instr },
             .{ "REPLACE", ScalarFunc.replace_fn },
+            .{ "HEX", ScalarFunc.hex },
+            .{ "UNICODE", ScalarFunc.unicode_fn },
+            .{ "CHAR", ScalarFunc.char_fn },
+            .{ "ZEROBLOB", ScalarFunc.zeroblob },
+            .{ "PRINTF", ScalarFunc.printf_fn },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {
