@@ -2280,21 +2280,34 @@ pub const Database = struct {
                 var left_jc: ?usize = null;
                 var right_jc: ?usize = null;
 
-                // Find which alias the left_table reference in ON refers to
-                for (alias_offsets.items) |ao| {
-                    if (std.mem.eql(u8, join.left_table, ao.alias) or std.mem.eql(u8, join.left_table, ao.name)) {
-                        if (ao.table.findColumnIndex(join.left_column)) |ci| {
-                            left_jc = ao.offset + ci;
+                // NATURAL JOIN: find first matching column name
+                if (join.natural) {
+                    for (combined_cols_list.items, 0..) |left_col, ci| {
+                        if (right_table.findColumnIndex(left_col.name)) |ri| {
+                            left_jc = ci;
+                            right_jc = ri;
+                            break;
                         }
-                        right_jc = right_table.findColumnIndex(join.right_column);
-                        break;
                     }
-                    if (std.mem.eql(u8, join.right_table, ao.alias) or std.mem.eql(u8, join.right_table, ao.name)) {
-                        if (ao.table.findColumnIndex(join.right_column)) |ci| {
-                            left_jc = ao.offset + ci;
+                }
+
+                // Find which alias the left_table reference in ON refers to
+                if (left_jc == null) {
+                    for (alias_offsets.items) |ao| {
+                        if (std.mem.eql(u8, join.left_table, ao.alias) or std.mem.eql(u8, join.left_table, ao.name)) {
+                            if (ao.table.findColumnIndex(join.left_column)) |ci| {
+                                left_jc = ao.offset + ci;
+                            }
+                            right_jc = right_table.findColumnIndex(join.right_column);
+                            break;
                         }
-                        right_jc = right_table.findColumnIndex(join.left_column);
-                        break;
+                        if (std.mem.eql(u8, join.right_table, ao.alias) or std.mem.eql(u8, join.right_table, ao.name)) {
+                            if (ao.table.findColumnIndex(join.right_column)) |ci| {
+                                left_jc = ao.offset + ci;
+                            }
+                            right_jc = right_table.findColumnIndex(join.left_column);
+                            break;
+                        }
                     }
                 }
 

@@ -245,6 +245,7 @@ pub const JoinClause = struct {
     left_column: []const u8,
     right_table: []const u8,
     right_column: []const u8,
+    natural: bool = false, // NATURAL JOIN (auto-match columns)
 };
 
 pub const HavingClause = struct {
@@ -829,7 +830,7 @@ pub const Parser = struct {
 
         // Parse optional JOINs (including comma syntax: FROM t1, t2 = CROSS JOIN)
         var joins: std.ArrayList(JoinClause) = .{};
-        while (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_right or self.peek().type == .kw_join or self.peek().type == .kw_cross or self.peek().type == .kw_full) {
+        while (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_right or self.peek().type == .kw_join or self.peek().type == .kw_cross or self.peek().type == .kw_full or self.peek().type == .kw_natural) {
             const jc = try self.parseJoinClause();
             joins.append(self.allocator, jc) catch return ParseError.OutOfMemory;
         }
@@ -953,7 +954,12 @@ pub const Parser = struct {
     }
 
     fn parseJoinClause(self: *Parser) ParseError!JoinClause {
-        // Parse: [INNER|LEFT|CROSS] JOIN table [AS alias] [ON t1.col = t2.col]
+        // Parse: [NATURAL] [INNER|LEFT|CROSS|FULL] JOIN table [AS alias] [ON t1.col = t2.col]
+        var is_natural = false;
+        if (self.peek().type == .kw_natural) {
+            _ = self.advance();
+            is_natural = true;
+        }
         var join_type: JoinType = .inner;
         if (self.peek().type == .kw_inner) {
             _ = self.advance();
@@ -987,16 +993,17 @@ pub const Parser = struct {
             join_alias = self.advance().lexeme;
         }
 
-        // CROSS JOIN has no ON clause
-        if (join_type == .cross) {
+        // CROSS JOIN or NATURAL JOIN has no ON clause
+        if (join_type == .cross or is_natural) {
             return .{
-                .join_type = .cross,
+                .join_type = join_type,
                 .table_name = join_table.lexeme,
                 .table_alias = join_alias,
                 .left_table = "",
                 .left_column = "",
                 .right_table = "",
                 .right_column = "",
+                .natural = is_natural,
             };
         }
 
