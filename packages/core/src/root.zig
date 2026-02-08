@@ -2812,6 +2812,27 @@ pub const Database = struct {
         self.projected_rows = proj_rows;
         self.projected_values = proj_values;
         try self.collectAggTexts(sel.select_exprs, proj_values);
+
+        // Set column names for aggregate results (used by materializeView)
+        var agg_col_names = try self.allocator.alloc([]const u8, sel.select_exprs.len);
+        for (0..sel.select_exprs.len) |i| {
+            if (i < sel.aliases.len) {
+                if (sel.aliases[i]) |alias| {
+                    agg_col_names[i] = try dupeStr(self.allocator, alias);
+                    continue;
+                }
+            }
+            switch (sel.select_exprs[i]) {
+                .column => |col_name| {
+                    agg_col_names[i] = try dupeStr(self.allocator, col_name);
+                },
+                else => {
+                    agg_col_names[i] = try dupeStr(self.allocator, "");
+                },
+            }
+        }
+        self.projected_column_names = agg_col_names;
+
         return .{ .rows = proj_rows };
     }
 
@@ -2819,6 +2840,12 @@ pub const Database = struct {
         // Handle table-less SELECT (e.g., SELECT ABS(-10);)
         if (sel.table_name.len == 0) {
             return self.executeTablelessSelect(sel);
+        }
+
+        // Resolve derived table (FROM subquery)
+        if (sel.subquery_sql) |sq_sql| {
+            defer self.allocator.free(@constCast(sq_sql));
+            try self.materializeView(sel.table_name, sq_sql);
         }
 
         // Resolve view: if table_name is a view, materialize it as a temp table

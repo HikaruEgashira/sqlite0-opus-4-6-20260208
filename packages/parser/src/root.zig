@@ -333,6 +333,7 @@ pub const Statement = union(enum) {
     pub const Select = struct {
         table_name: []const u8,
         table_alias: ?[]const u8 = null, // FROM table alias
+        subquery_sql: ?[]const u8 = null, // FROM (SELECT ...) derived table
         columns: []const []const u8, // empty = * (plain column names for backward compat)
         select_exprs: []const SelectExpr, // full expression list (includes aggregates)
         result_exprs: []const *const Expr, // parsed expression ASTs for each SELECT item
@@ -990,18 +991,34 @@ pub const Parser = struct {
         // FROM is optional for table-less SELECT (e.g., SELECT ABS(-10);)
         var table_name: []const u8 = "";
         var table_alias: ?[]const u8 = null;
+        var subquery_sql: ?[]const u8 = null;
         if (self.peek().type == .kw_from) {
             _ = self.advance();
-            const table_tok = try self.expect(.identifier);
-            table_name = table_tok.lexeme;
-            // Parse optional alias: AS alias or bare alias
-            if (self.peek().type == .kw_as) {
-                _ = self.advance();
-                const alias_tok = try self.expectAlias();
-                table_alias = alias_tok.lexeme;
-            } else if (self.peek().type == .identifier) {
-                // Bare alias (not a keyword)
-                table_alias = self.advance().lexeme;
+            // Check for derived table: FROM (SELECT ...)
+            if (self.peek().type == .lparen and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .kw_select) {
+                _ = self.advance(); // consume '('
+                subquery_sql = try self.extractSubquerySQL(); // also consumes ')'
+                table_name = "__subquery";
+                // Parse optional alias
+                if (self.peek().type == .kw_as) {
+                    _ = self.advance();
+                    const alias_tok = try self.expectAlias();
+                    table_alias = alias_tok.lexeme;
+                } else if (self.peek().type == .identifier) {
+                    table_alias = self.advance().lexeme;
+                }
+            } else {
+                const table_tok = try self.expect(.identifier);
+                table_name = table_tok.lexeme;
+                // Parse optional alias: AS alias or bare alias
+                if (self.peek().type == .kw_as) {
+                    _ = self.advance();
+                    const alias_tok = try self.expectAlias();
+                    table_alias = alias_tok.lexeme;
+                } else if (self.peek().type == .identifier) {
+                    // Bare alias (not a keyword)
+                    table_alias = self.advance().lexeme;
+                }
             }
         }
 
@@ -1162,6 +1179,7 @@ pub const Parser = struct {
             .select_stmt = .{
                 .table_name = table_name,
                 .table_alias = table_alias,
+                .subquery_sql = subquery_sql,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .select_exprs = select_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
