@@ -901,9 +901,11 @@ pub const Parser = struct {
             join_type = .inner;
         } else if (self.peek().type == .kw_left) {
             _ = self.advance();
+            if (self.peek().type == .kw_outer) _ = self.advance(); // optional OUTER
             join_type = .left;
         } else if (self.peek().type == .kw_right) {
             _ = self.advance();
+            if (self.peek().type == .kw_outer) _ = self.advance(); // optional OUTER
             join_type = .right;
         } else if (self.peek().type == .kw_cross) {
             _ = self.advance();
