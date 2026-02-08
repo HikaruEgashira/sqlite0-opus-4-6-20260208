@@ -1550,6 +1550,7 @@ pub const Database = struct {
         proj_values: [][]Value,
         tbl: *const Table,
         src_rows: []const Row,
+        alloc_texts: *std.ArrayList([]const u8),
     ) !void {
         const row_count = proj_rows.len;
         if (row_count == 0) return;
@@ -1673,7 +1674,7 @@ pub const Database = struct {
             // For aggregate/value window functions, compute per-partition
             switch (wf.func) {
                 .win_sum, .win_avg, .win_count, .win_min, .win_max, .win_total => {
-                    try self.computeWindowAggregates(wf, indices, col_idx, tbl, src_rows, proj_values, proj_rows);
+                    try self.computeWindowAggregates(wf, indices, col_idx, tbl, src_rows, proj_values, proj_rows, alloc_texts);
                 },
                 .lag, .lead, .ntile, .first_value, .last_value => {
                     try self.computeWindowValueFunctions(wf, indices, col_idx, tbl, src_rows, proj_values, proj_rows);
@@ -1692,6 +1693,7 @@ pub const Database = struct {
         src_rows: []const Row,
         proj_values: [][]Value,
         proj_rows: []Row,
+        alloc_texts: *std.ArrayList([]const u8),
     ) !void {
         // Process rows in sorted order (by partition then order)
         // Group into partitions and compute aggregate for each
@@ -1712,62 +1714,122 @@ pub const Database = struct {
                 part_end += 1;
             }
 
-            // Compute aggregate over this partition
-            var agg_sum: f64 = 0;
-            var agg_count: i64 = 0;
-            var agg_min: Value = .null_val;
-            var agg_max: Value = .null_val;
-            var has_value = false;
+            const has_order_by = wf.order_by.len > 0;
 
-            for (part_start..part_end) |i| {
-                const row_idx = indices[i];
-                const is_star = if (wf.arg) |arg_expr| (arg_expr.* == .star) else true;
-                const val = if (is_star) Value{ .integer = 1 } else (self.evalExpr(wf.arg.?, tbl, src_rows[row_idx]) catch .null_val);
+            if (has_order_by) {
+                // Running/cumulative aggregate (default frame: UNBOUNDED PRECEDING to CURRENT ROW)
+                var run_sum: f64 = 0;
+                var run_count: i64 = 0;
+                var run_min: Value = .null_val;
+                var run_max: Value = .null_val;
+                var run_has_value = false;
 
-                if (val == .null_val) continue;
+                for (part_start..part_end) |i| {
+                    const row_idx = indices[i];
+                    const is_star = if (wf.arg) |arg_expr| (arg_expr.* == .star) else true;
+                    const val = if (is_star) Value{ .integer = 1 } else (self.evalExpr(wf.arg.?, tbl, src_rows[row_idx]) catch .null_val);
 
-                if (wf.func == .win_count) {
-                    agg_count += 1;
-                } else {
-                    const fval = self.valueToF64(val) orelse 0;
-                    if (!has_value) {
-                        agg_sum = fval;
-                        agg_min = val;
-                        agg_max = val;
-                        agg_count = 1;
-                        has_value = true;
-                    } else {
-                        agg_sum += fval;
+                    if (val != .null_val) {
+                        if (wf.func == .win_count) {
+                            run_count += 1;
+                        } else {
+                            const fval = self.valueToF64(val) orelse 0;
+                            if (!run_has_value) {
+                                run_sum = fval;
+                                run_min = val;
+                                run_max = val;
+                                run_count = 1;
+                                run_has_value = true;
+                            } else {
+                                run_sum += fval;
+                                run_count += 1;
+                                if (compareValuesOrder(val, run_min) == .lt) run_min = val;
+                                if (compareValuesOrder(val, run_max) == .gt) run_max = val;
+                            }
+                        }
+                    }
+
+                    // Assign running aggregate value to this row
+                    const result: Value = switch (wf.func) {
+                        .win_count => .{ .integer = run_count },
+                        .win_sum => if (run_has_value) blk: {
+                            const int_val = @as(i64, @intFromFloat(run_sum));
+                            if (run_sum == @as(f64, @floatFromInt(int_val))) {
+                                break :blk Value{ .integer = int_val };
+                            }
+                            break :blk self.formatFloat(run_sum);
+                        } else .null_val,
+                        .win_avg => if (run_count > 0) self.formatFloat(run_sum / @as(f64, @floatFromInt(run_count))) else .null_val,
+                        .win_min => run_min,
+                        .win_max => run_max,
+                        .win_total => self.formatFloat(run_sum),
+                        else => .null_val,
+                    };
+
+                    if (result == .text) {
+                        alloc_texts.append(self.allocator, result.text) catch {};
+                    }
+                    proj_values[row_idx][col_idx] = result;
+                    proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                }
+            } else {
+                // No ORDER BY: aggregate over entire partition
+                var agg_sum: f64 = 0;
+                var agg_count: i64 = 0;
+                var agg_min: Value = .null_val;
+                var agg_max: Value = .null_val;
+                var has_value = false;
+
+                for (part_start..part_end) |i| {
+                    const row_idx = indices[i];
+                    const is_star = if (wf.arg) |arg_expr| (arg_expr.* == .star) else true;
+                    const val = if (is_star) Value{ .integer = 1 } else (self.evalExpr(wf.arg.?, tbl, src_rows[row_idx]) catch .null_val);
+
+                    if (val == .null_val) continue;
+
+                    if (wf.func == .win_count) {
                         agg_count += 1;
-                        if (compareValuesOrder(val, agg_min) == .lt) agg_min = val;
-                        if (compareValuesOrder(val, agg_max) == .gt) agg_max = val;
+                    } else {
+                        const fval = self.valueToF64(val) orelse 0;
+                        if (!has_value) {
+                            agg_sum = fval;
+                            agg_min = val;
+                            agg_max = val;
+                            agg_count = 1;
+                            has_value = true;
+                        } else {
+                            agg_sum += fval;
+                            agg_count += 1;
+                            if (compareValuesOrder(val, agg_min) == .lt) agg_min = val;
+                            if (compareValuesOrder(val, agg_max) == .gt) agg_max = val;
+                        }
                     }
                 }
-            }
 
-            // Determine the result value
-            const result: Value = switch (wf.func) {
-                .win_count => .{ .integer = agg_count },
-                .win_sum => if (has_value) blk: {
-                    // Return integer if all values were integers and result fits
-                    const int_val = @as(i64, @intFromFloat(agg_sum));
-                    if (agg_sum == @as(f64, @floatFromInt(int_val))) {
-                        break :blk Value{ .integer = int_val };
-                    }
-                    break :blk self.formatFloat(agg_sum);
-                } else .null_val,
-                .win_avg => if (agg_count > 0) self.formatFloat(agg_sum / @as(f64, @floatFromInt(agg_count))) else .null_val,
-                .win_min => agg_min,
-                .win_max => agg_max,
-                .win_total => self.formatFloat(agg_sum),
-                else => .null_val,
-            };
+                const result: Value = switch (wf.func) {
+                    .win_count => .{ .integer = agg_count },
+                    .win_sum => if (has_value) blk: {
+                        const int_val = @as(i64, @intFromFloat(agg_sum));
+                        if (agg_sum == @as(f64, @floatFromInt(int_val))) {
+                            break :blk Value{ .integer = int_val };
+                        }
+                        break :blk self.formatFloat(agg_sum);
+                    } else .null_val,
+                    .win_avg => if (agg_count > 0) self.formatFloat(agg_sum / @as(f64, @floatFromInt(agg_count))) else .null_val,
+                    .win_min => agg_min,
+                    .win_max => agg_max,
+                    .win_total => self.formatFloat(agg_sum),
+                    else => .null_val,
+                };
 
-            // Assign to all rows in this partition
-            for (part_start..part_end) |i| {
-                const row_idx = indices[i];
-                proj_values[row_idx][col_idx] = result;
-                proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                if (result == .text) {
+                    alloc_texts.append(self.allocator, result.text) catch {};
+                }
+                for (part_start..part_end) |i| {
+                    const row_idx = indices[i];
+                    proj_values[row_idx][col_idx] = result;
+                    proj_rows[row_idx] = .{ .values = proj_values[row_idx] };
+                }
             }
 
             part_start = part_end;
@@ -2196,6 +2258,15 @@ pub const Database = struct {
             },
             .cast => |c| {
                 self.freeExprDeep(c.operand);
+            },
+            .window_func => |wf| {
+                if (wf.arg) |arg| self.freeExprDeep(arg);
+                if (wf.default_val) |dv| self.freeExprDeep(dv);
+                for (wf.order_by) |ob| {
+                    if (ob.expr) |e| self.freeExprDeep(e);
+                }
+                if (wf.order_by.len > 0) self.allocator.free(wf.order_by);
+                if (wf.partition_by.len > 0) self.allocator.free(wf.partition_by);
             },
             else => {},
         }
@@ -3126,7 +3197,103 @@ pub const Database = struct {
         }
 
         // Evaluate window functions (post-processing)
-        try self.evaluateWindowFunctions(sel.result_exprs, proj_rows, proj_values, tbl, result_rows);
+        try self.evaluateWindowFunctions(sel.result_exprs, proj_rows, proj_values, tbl, result_rows, &alloc_texts);
+
+        // If no explicit ORDER BY but window functions have ORDER BY, sort by window ORDER BY
+        // (SQLite implicitly sorts output by PARTITION BY + window ORDER BY)
+        if (sel.order_by == null) {
+            for (sel.result_exprs) |rexpr| {
+                if (rexpr.* == .window_func and rexpr.window_func.order_by.len > 0) {
+                    const wf_data = rexpr.window_func;
+                    // Build sort keys: PARTITION BY columns (ASC) + ORDER BY columns
+                    var win_ob_indices: std.ArrayList(usize) = .{};
+                    defer win_ob_indices.deinit(self.allocator);
+                    var win_ob_descs: std.ArrayList(bool) = .{};
+                    defer win_ob_descs.deinit(self.allocator);
+                    var all_found = true;
+
+                    // First: PARTITION BY columns (always ASC)
+                    for (wf_data.partition_by) |pcol| {
+                        var found_idx: ?usize = null;
+                        for (sel.aliases, 0..) |alias, ai| {
+                            if (alias) |a| {
+                                if (std.ascii.eqlIgnoreCase(pcol, a)) {
+                                    found_idx = ai;
+                                    break;
+                                }
+                            }
+                        }
+                        if (found_idx == null) {
+                            for (sel.result_exprs, 0..) |re, ei| {
+                                if (re.* == .column_ref and std.ascii.eqlIgnoreCase(re.column_ref, pcol)) {
+                                    found_idx = ei;
+                                    break;
+                                }
+                            }
+                        }
+                        if (found_idx) |fi| {
+                            win_ob_indices.append(self.allocator, fi) catch {};
+                            win_ob_descs.append(self.allocator, false) catch {};
+                        } else {
+                            all_found = false;
+                            break;
+                        }
+                    }
+
+                    // Then: ORDER BY columns
+                    if (all_found) {
+                        for (wf_data.order_by) |wob| {
+                            var found_idx: ?usize = null;
+                            if (wob.column.len > 0) {
+                                for (sel.aliases, 0..) |alias, ai| {
+                                    if (alias) |a| {
+                                        if (std.ascii.eqlIgnoreCase(wob.column, a)) {
+                                            found_idx = ai;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (found_idx == null) {
+                                    for (sel.result_exprs, 0..) |re, ei| {
+                                        if (re.* == .column_ref and std.ascii.eqlIgnoreCase(re.column_ref, wob.column)) {
+                                            found_idx = ei;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if (found_idx) |fi| {
+                                win_ob_indices.append(self.allocator, fi) catch {};
+                                win_ob_descs.append(self.allocator, wob.order == .desc) catch {};
+                            } else {
+                                all_found = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (all_found and win_ob_indices.items.len > 0) {
+                        const WinSortCtx = struct {
+                            idx: []const usize,
+                            descs: []const bool,
+                            fn lessThan(ctx: @This(), a: Row, b: Row) bool {
+                                for (ctx.idx, ctx.descs) |ci, is_desc| {
+                                    const va = a.values[ci];
+                                    const vb = b.values[ci];
+                                    const cmp = compareValuesOrder(va, vb);
+                                    if (cmp == .eq) continue;
+                                    if (is_desc) return cmp == .gt;
+                                    return cmp == .lt;
+                                }
+                                return false;
+                            }
+                        };
+                        std.mem.sort(Row, proj_rows, WinSortCtx{ .idx = win_ob_indices.items, .descs = win_ob_descs.items }, WinSortCtx.lessThan);
+                    }
+                    break; // Use first window function's ORDER BY
+                }
+            }
+        }
 
         // Re-sort by ORDER BY (resolving aliases to projected column indices)
         if (sel.order_by) |order_by| {
