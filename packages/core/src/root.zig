@@ -656,8 +656,12 @@ pub const Database = struct {
                 const val = try self.evalExpr(args[0], tbl, row);
                 defer if (val == .text) self.allocator.free(val.text);
                 if (val == .null_val) return .null_val;
-                const n = self.valueToI64(val) orelse return .null_val;
-                return .{ .integer = if (n < 0) -n else n };
+                // Try integer first, then float
+                if (self.valueToI64(val)) |n| {
+                    return .{ .integer = if (n < 0) -n else n };
+                }
+                const f = self.valueToF64(val) orelse return .null_val;
+                return self.formatFloat(@abs(f));
             },
             .length => {
                 if (args.len != 1) return .null_val;
@@ -976,28 +980,21 @@ pub const Database = struct {
                 return .{ .text = try dupeStr(self.allocator, trimmed) };
             },
             .round => {
-                // ROUND always returns real in SQLite
+                // ROUND(x) or ROUND(x, n) — always returns real in SQLite
                 if (args.len == 0 or args.len > 2) return .null_val;
                 const val = try self.evalExpr(args[0], tbl, row);
                 defer if (val == .text) self.allocator.free(val.text);
                 if (val == .null_val) return .null_val;
-                const n = self.valueToI64(val) orelse return .null_val;
-                const float_val: f64 = @floatFromInt(n);
-                var buf: [64]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{float_val}) catch return .null_val;
-                var has_dot = false;
-                for (slice) |ch| {
-                    if (ch == '.') { has_dot = true; break; }
+                const float_val = self.valueToF64(val) orelse return .null_val;
+                var precision: i64 = 0; // default: round to integer
+                if (args.len == 2) {
+                    const prec_val = try self.evalExpr(args[1], tbl, row);
+                    defer if (prec_val == .text) self.allocator.free(prec_val.text);
+                    precision = self.valueToI64(prec_val) orelse 0;
                 }
-                if (has_dot) {
-                    return .{ .text = try dupeStr(self.allocator, slice) };
-                } else {
-                    var dot_buf: [66]u8 = undefined;
-                    @memcpy(dot_buf[0..slice.len], slice);
-                    dot_buf[slice.len] = '.';
-                    dot_buf[slice.len + 1] = '0';
-                    return .{ .text = try dupeStr(self.allocator, dot_buf[0 .. slice.len + 2]) };
-                }
+                const factor = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(precision)));
+                const rounded = @round(float_val * factor) / factor;
+                return self.formatFloat(rounded);
             },
             .ifnull => {
                 if (args.len != 2) return .null_val;
@@ -1017,8 +1014,11 @@ pub const Database = struct {
                 const val = try self.evalExpr(args[0], tbl, row);
                 defer if (val == .text) self.allocator.free(val.text);
                 if (val == .null_val) return .null_val;
-                const n = self.valueToI64(val) orelse return .null_val;
-                return .{ .integer = if (n > 0) @as(i64, 1) else if (n < 0) @as(i64, -1) else 0 };
+                if (self.valueToI64(val)) |n| {
+                    return .{ .integer = if (n > 0) @as(i64, 1) else if (n < 0) @as(i64, -1) else 0 };
+                }
+                const f = self.valueToF64(val) orelse return .null_val;
+                return .{ .integer = if (f > 0) @as(i64, 1) else if (f < 0) @as(i64, -1) else 0 };
             },
             .date_fn => {
                 return self.evalDateTimeFunc(args, tbl, row, .date_only);
@@ -2476,7 +2476,9 @@ pub const Database = struct {
         }
     }
 
-    fn formatFloat(self: *Database, f: f64) Value {
+    fn formatFloat(self: *Database, f_in: f64) Value {
+        // Normalize negative zero to positive zero (SQLite behavior)
+        const f = if (f_in == 0.0) @as(f64, 0.0) else f_in;
         // SQLite uses %.15g format (15 significant digits, trailing zeros removed)
         // We use a C-compatible sprintf approach via Zig
         var buf: [64]u8 = undefined;
