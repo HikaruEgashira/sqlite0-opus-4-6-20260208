@@ -146,6 +146,11 @@ pub const Tokenizer = struct {
             self.pos += 2;
             return .{ .type = .not_equals, .lexeme = lexeme };
         }
+        if (c == '<' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '>') {
+            const lexeme = self.source[self.pos .. self.pos + 2];
+            self.pos += 2;
+            return .{ .type = .not_equals, .lexeme = lexeme };
+        }
         if (c == '<' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
             const lexeme = self.source[self.pos .. self.pos + 2];
             self.pos += 2;
