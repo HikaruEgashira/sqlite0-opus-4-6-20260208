@@ -1,0 +1,11 @@
+CREATE TABLE products (id INTEGER, price INTEGER);
+INSERT INTO products VALUES (1, 100);
+INSERT INTO products VALUES (2, 200);
+INSERT INTO products VALUES (3, 50);
+
+CREATE TABLE expensive (id INTEGER, price INTEGER);
+INSERT INTO expensive SELECT * FROM products WHERE price >= 100;
+SELECT * FROM expensive;
+CREATE TABLE top2 (id INTEGER, price INTEGER);
+INSERT INTO top2 SELECT * FROM products ORDER BY price DESC LIMIT 2;
+SELECT * FROM top2;

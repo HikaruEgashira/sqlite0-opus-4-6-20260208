@@ -1127,6 +1127,49 @@ pub const Database = struct {
         return values;
     }
 
+    fn executeInsertSelect(self: *Database, table: *Table, select_sql: []const u8) !ExecuteResult {
+        // Save and restore projected state
+        const saved_rows = self.projected_rows;
+        const saved_values = self.projected_values;
+        const saved_texts = self.projected_texts;
+        self.projected_rows = null;
+        self.projected_values = null;
+        self.projected_texts = null;
+
+        const result = try self.execute(select_sql);
+
+        switch (result) {
+            .rows => |rows| {
+                for (rows) |row| {
+                    // Deep copy each row's values for insertion
+                    var new_values = try self.allocator.alloc(Value, row.values.len);
+                    for (row.values, 0..) |val, vi| {
+                        new_values[vi] = switch (val) {
+                            .text => |t| .{ .text = try dupeStr(self.allocator, t) },
+                            .integer => |n| .{ .integer = n },
+                            .null_val => .null_val,
+                        };
+                    }
+                    try table.storage().append(self.allocator, .{ .values = new_values });
+                }
+            },
+            .err => |e| {
+                self.freeProjected();
+                self.projected_rows = saved_rows;
+                self.projected_values = saved_values;
+                self.projected_texts = saved_texts;
+                return .{ .err = e };
+            },
+            .ok => {},
+        }
+
+        self.freeProjected();
+        self.projected_rows = saved_rows;
+        self.projected_values = saved_values;
+        self.projected_texts = saved_texts;
+        return .ok;
+    }
+
     fn matchesConditionWithSubquery(self: *Database, table: *const Table, row: Row, column: []const u8, op: CompOp, value: []const u8, subquery_sql: ?[]const u8) !bool {
         if (subquery_sql) |sq| {
             const sub_values = try self.executeSubquery(sq);
@@ -1213,8 +1256,13 @@ pub const Database = struct {
                 return .ok;
             },
             .insert => |ins| {
-                defer self.allocator.free(ins.values);
+                defer if (ins.select_sql == null) self.allocator.free(ins.values);
+                defer if (ins.select_sql) |s| self.allocator.free(@constCast(s));
                 if (self.tables.getPtr(ins.table_name)) |table| {
+                    if (ins.select_sql) |select_sql| {
+                        // INSERT INTO ... SELECT
+                        return self.executeInsertSelect(table, select_sql);
+                    }
                     try table.insertRow(ins.values);
                     return .ok;
                 }

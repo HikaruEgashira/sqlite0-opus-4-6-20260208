@@ -170,6 +170,7 @@ pub const Statement = union(enum) {
     pub const Insert = struct {
         table_name: []const u8,
         values: []const []const u8,
+        select_sql: ?[]const u8 = null, // INSERT INTO ... SELECT (raw SQL)
     };
 
     pub const Select = struct {
@@ -361,6 +362,19 @@ pub const Parser = struct {
         _ = try self.expect(.kw_insert);
         _ = try self.expect(.kw_into);
         const name_tok = try self.expect(.identifier);
+
+        // INSERT INTO ... SELECT or INSERT INTO ... VALUES
+        if (self.peek().type == .kw_select) {
+            const select_sql = try self.extractInsertSelectSQL();
+            return Statement{
+                .insert = .{
+                    .table_name = name_tok.lexeme,
+                    .values = &.{},
+                    .select_sql = select_sql,
+                },
+            };
+        }
+
         _ = try self.expect(.kw_values);
         _ = try self.expect(.lparen);
 
@@ -394,6 +408,30 @@ pub const Parser = struct {
                 .values = values.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             },
         };
+    }
+
+    fn extractInsertSelectSQL(self: *Parser) ParseError![]const u8 {
+        // Positioned at SELECT token; capture everything until ';'
+        const start_tok = self.peek();
+        if (start_tok.type != .kw_select) return ParseError.UnexpectedToken;
+        const start_ptr = start_tok.lexeme.ptr;
+
+        while (self.peek().type != .semicolon and self.peek().type != .eof) {
+            _ = self.advance();
+        }
+        if (self.peek().type != .semicolon) return ParseError.UnexpectedToken;
+
+        const prev_tok = self.tokens[self.pos - 1];
+        const end_ptr = prev_tok.lexeme.ptr + prev_tok.lexeme.len;
+        const sql_len = @intFromPtr(end_ptr) - @intFromPtr(start_ptr);
+        const sql = start_ptr[0..sql_len];
+
+        _ = self.advance(); // consume ';'
+
+        var buf = self.allocator.alloc(u8, sql.len + 1) catch return ParseError.OutOfMemory;
+        @memcpy(buf[0..sql.len], sql);
+        buf[sql.len] = ';';
+        return buf;
     }
 
     fn isAggFunc(tt: TokenType) ?AggFunc {
