@@ -60,10 +60,18 @@
 - ~~AUTOINCREMENT~~ ✓
 - ~~浮動小数点リテラル・REAL列型~~ ✓
 - ~~LEFT/RIGHT OUTER JOIN構文~~ ✓
-- Date/Time関数 (datetime, date, strftime)
-- FULL OUTER JOIN
-- Window関数 (ROW_NUMBER, RANK, etc.)
+- ~~Date/Time関数 (datetime, date, strftime)~~ ✓
+- ~~FULL OUTER JOIN~~ ✓
+- ~~Window関数 (ROW_NUMBER, RANK, DENSE_RANK)~~ ✓
+- ~~NATURAL JOIN~~ ✓
+- ~~CREATE TABLE AS SELECT~~ ✓
+- ~~<>演算子~~ ✓
 - 外部キー (FOREIGN KEY)
+- PARTITION BY (Window関数)
+- SUM/AVG OVER (Window集約)
+- GENERATED COLUMNS
+- UPSERT (ON CONFLICT)
+- Common Table Expressions (WITH/CTE)
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

@@ -74,6 +74,20 @@
 - [x] 負数パースのメモリリーク修正
 - Differential Test: **102/102 passing**
 
+### Phase 6d-10: SQL機能充実（完了）
+- [x] <>演算子
+- [x] Date/Time関数（date, time, datetime, strftime）
+- [x] FULL OUTER JOIN
+- [x] Window関数（ROW_NUMBER, RANK, DENSE_RANK）
+- [x] NATURAL JOIN
+- [x] CREATE TABLE AS SELECT
+- [x] UPSERT (INSERT ... ON CONFLICT DO NOTHING/UPDATE)
+- [x] Common Table Expressions (WITH/CTE)
+- [x] Simple CASE expression (CASE expr WHEN val ...)
+- [x] INSERT INTO ... DEFAULT VALUES
+- [x] NULLS FIRST/LAST in ORDER BY
+- Differential Test: **113/113 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）
