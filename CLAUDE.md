@@ -9,14 +9,11 @@ zig build
 # Run REPL
 zig build run
 
-# Unit tests (23 tests)
+# Unit tests
 zig build test
 
-# Differential tests against SQLite3 (32 cases)
+# Differential tests against SQLite3
 bash tests/differential/run.sh
-
-# Both tests (CI equivalent)
-zig build test && bash tests/differential/run.sh
 ```
 
 ## Project Structure
@@ -38,7 +35,7 @@ Module dependency: `app -> core -> parser -> tokenizer`
 ## Commit Conventions
 
 ```
-<type>: <short description in English or Japanese>
+<type>: <short description in English>
 ```
 
 Types: `feat`, `fix`, `improve`, `refactor`, `docs`, `chore`
