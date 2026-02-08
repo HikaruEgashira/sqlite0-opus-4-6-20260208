@@ -188,6 +188,15 @@
 - [x] TableSnapshotにnext_rowid保存・復元
 - Differential Test: **173/173 passing**
 
+### Phase 6d-19: SQL関数・バグ修正（完了）
+- [x] QUOTE() スカラー関数（テキストのクォーティング、エスケープ）
+- [x] TYPEOF() が float-like テキストに 'real' を返すように修正
+- [x] last_insert_rowid() / changes() / total_changes() 関数
+- [x] CAST(float AS INTEGER) の切り捨て修正（3.14→3）
+- [x] キーワード（key, value等）をカラム名に使用可能に
+- [x] 差分テスト追加: quote/typeof, changes/rowid, cast/float, coalesce/null, upsert, 式, rowid操作
+- Differential Test: **180/180 passing**
+
 ### 次のステップ
 
 ### Phase 6e: ファイル永続化
