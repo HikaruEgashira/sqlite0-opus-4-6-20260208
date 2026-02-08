@@ -20,10 +20,17 @@ pub const SortOrder = enum {
     desc,
 };
 
+pub const NullOrder = enum {
+    default, // null sorts as smallest (SQLite default)
+    first,
+    last,
+};
+
 pub const OrderByItem = struct {
     column: []const u8, // column name (empty if expr-based)
     order: SortOrder,
     expr: ?*const Expr = null, // expression for ORDER BY (null if simple column)
+    null_order: NullOrder = .default,
 };
 
 pub const OrderByClause = struct {
@@ -1188,12 +1195,26 @@ pub const Parser = struct {
                 _ = self.advance();
                 order = .desc;
             }
+            // Parse optional NULLS FIRST/LAST (contextual keywords)
+            var null_order: NullOrder = .default;
+            if (isIdentEql(self.peek(), "NULLS")) {
+                _ = self.advance(); // consume NULLS
+                if (isIdentEql(self.peek(), "FIRST")) {
+                    _ = self.advance();
+                    null_order = .first;
+                } else if (isIdentEql(self.peek(), "LAST")) {
+                    _ = self.advance();
+                    null_order = .last;
+                } else {
+                    return ParseError.UnexpectedToken;
+                }
+            }
             const order_expr: ?*const Expr = if (col_name.len == 0) expr else blk: {
                 // Free the Expr allocation for simple column refs since we keep just the name
                 self.allocator.destroy(@constCast(expr));
                 break :blk null;
             };
-            items.append(self.allocator, .{ .column = col_name, .order = order, .expr = order_expr }) catch return ParseError.OutOfMemory;
+            items.append(self.allocator, .{ .column = col_name, .order = order, .expr = order_expr, .null_order = null_order }) catch return ParseError.OutOfMemory;
 
             if (self.peek().type == .comma) {
                 _ = self.advance();

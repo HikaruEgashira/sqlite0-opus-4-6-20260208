@@ -21,6 +21,7 @@ pub const CompOp = parser.CompOp;
 pub const OrderByClause = parser.OrderByClause;
 pub const OrderByItem = parser.OrderByItem;
 pub const SortOrder = parser.SortOrder;
+pub const NullOrder = parser.NullOrder;
 pub const SelectExpr = parser.SelectExpr;
 pub const AggFunc = parser.AggFunc;
 pub const SetOp = parser.SetOp;
@@ -3207,19 +3208,36 @@ pub const Database = struct {
             var desc_flags = try self.allocator.alloc(bool, items.len);
             defer self.allocator.free(desc_flags);
 
+            var null_flags = try self.allocator.alloc(NullOrder, items.len);
+            defer self.allocator.free(null_flags);
+
             for (items, 0..) |item, i| {
                 col_indices[i] = tbl.findColumnIndex(item.column) orelse return;
                 desc_flags[i] = item.order == .desc;
+                null_flags[i] = item.null_order;
             }
 
             const MultiSortCtx = struct {
                 indices: []const usize,
                 descs: []const bool,
+                null_orders: []const NullOrder,
 
                 fn lessThan(ctx: @This(), a: Row, b: Row) bool {
-                    for (ctx.indices, ctx.descs) |col_idx, is_desc| {
+                    for (ctx.indices, ctx.descs, ctx.null_orders) |col_idx, is_desc, null_ord| {
                         const va = a.values[col_idx];
                         const vb = b.values[col_idx];
+                        // Handle explicit NULLS FIRST/LAST
+                        if (null_ord != .default) {
+                            const a_null = (va == .null_val);
+                            const b_null = (vb == .null_val);
+                            if (a_null and b_null) continue;
+                            if (a_null or b_null) {
+                                const nulls_first = (null_ord == .first);
+                                if (a_null) return nulls_first;
+                                return !nulls_first;
+                            }
+                        }
+                        // Default: use compareValuesOrder (NULL is smallest)
                         const cmp = compareValuesOrder(va, vb);
                         if (cmp == .eq) continue;
                         if (is_desc) return cmp == .gt;
@@ -3229,7 +3247,7 @@ pub const Database = struct {
                 }
             };
 
-            std.mem.sort(Row, rows, MultiSortCtx{ .indices = col_indices, .descs = desc_flags }, MultiSortCtx.lessThan);
+            std.mem.sort(Row, rows, MultiSortCtx{ .indices = col_indices, .descs = desc_flags, .null_orders = null_flags }, MultiSortCtx.lessThan);
         }
     }
 
