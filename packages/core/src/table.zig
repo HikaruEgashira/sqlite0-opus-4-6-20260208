@@ -1,6 +1,8 @@
 const std = @import("std");
 const value_mod = @import("value.zig");
 const parser = @import("parser");
+const array_list_storage = @import("array_list_storage.zig");
+const row_storage = @import("row_storage.zig");
 
 const Value = value_mod.Value;
 const Row = value_mod.Row;
@@ -10,20 +12,27 @@ const compareValuesOrder = value_mod.compareValuesOrder;
 const likeMatch = value_mod.likeMatch;
 const WhereClause = parser.WhereClause;
 const CompOp = parser.CompOp;
+const ArrayListStorage = array_list_storage.ArrayListStorage;
+const RowStorage = row_storage.RowStorage;
 
 pub const Table = struct {
     name: []const u8,
     columns: []const Column,
-    rows: std.ArrayList(Row),
+    row_storage: ArrayListStorage,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, columns: []const Column) Table {
         return .{
             .name = name,
             .columns = columns,
-            .rows = .{},
+            .row_storage = ArrayListStorage.init(),
             .allocator = allocator,
         };
+    }
+
+    /// Get the abstract RowStorage interface
+    pub fn storage(self: *const Table) RowStorage {
+        return self.row_storage.storage();
     }
 
     pub fn insertRow(self: *Table, raw_values: []const []const u8) !void {
@@ -41,7 +50,7 @@ pub const Table = struct {
                 values[i] = .{ .integer = num };
             }
         }
-        try self.rows.append(self.allocator, .{ .values = values });
+        try self.storage().append(self.allocator, .{ .values = values });
     }
 
     pub fn findColumnIndex(self: *const Table, col_name: []const u8) ?usize {
@@ -176,10 +185,13 @@ pub const Table = struct {
     }
 
     pub fn deinit(self: *Table) void {
-        for (self.rows.items) |row| {
+        const rows = self.storage().scan();
+        // Note: scan() returns a slice into row_storage.rows.items
+        // We need to iterate before deinitializing storage
+        for (rows) |row| {
             self.freeRow(row);
         }
-        self.rows.deinit(self.allocator);
+        self.storage().deinit(self.allocator);
         for (self.columns) |col| {
             self.allocator.free(col.name);
         }

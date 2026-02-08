@@ -125,8 +125,9 @@ pub const Database = struct {
                 };
             }
             // Deep copy rows
-            var rows = try self.allocator.alloc(Row, table.rows.items.len);
-            for (table.rows.items, 0..) |row, ri| {
+            const src_rows = table.storage().scan();
+            var rows = try self.allocator.alloc(Row, src_rows.len);
+            for (src_rows, 0..) |row, ri| {
                 var values = try self.allocator.alloc(Value, row.values.len);
                 for (row.values, 0..) |val, vi| {
                     values[vi] = switch (val) {
@@ -178,7 +179,7 @@ pub const Database = struct {
                         .null_val => .null_val,
                     };
                 }
-                try table.rows.append(self.allocator, .{ .values = values });
+                try table.storage().append(self.allocator, .{ .values = values });
             }
             try self.tables.put(table_name, table);
         }
@@ -724,7 +725,8 @@ pub const Database = struct {
             // Collect matching rows (with optional WHERE filter)
             var matching_rows: std.ArrayList(Row) = .{};
             defer matching_rows.deinit(self.allocator);
-            for (table.rows.items) |row| {
+            const src_rows = table.storage().scan();
+            for (src_rows) |row| {
                 if (sel.where_expr) |we| {
                     const val = try self.evalExpr(we, &table, row);
                     defer if (val == .text) self.allocator.free(val.text);
@@ -960,9 +962,11 @@ pub const Database = struct {
         var joined_values: std.ArrayList([]Value) = .{};
 
         // Nested loop join
-        for (left_table.rows.items) |left_row| {
+        const left_rows = left_table.storage().scan();
+        const right_rows = right_table.storage().scan();
+        for (left_rows) |left_row| {
             var matched = false;
-            for (right_table.rows.items) |right_row| {
+            for (right_rows) |right_row| {
                 if (compareValuesOrder(left_row.values[left_join_col], right_row.values[right_join_col]) == .eq) {
                     matched = true;
                     var values = try self.allocator.alloc(Value, total_cols);
@@ -1230,31 +1234,35 @@ pub const Database = struct {
                 defer if (del.where_expr) |we| self.freeWhereExpr(we);
                 if (self.tables.getPtr(del.table_name)) |table| {
                     if (del.where_expr) |we| {
-                        var i: usize = table.rows.items.len;
+                        var i: usize = table.storage().len();
                         while (i > 0) {
                             i -= 1;
-                            const val = try self.evalExpr(we, table, table.rows.items[i]);
+                            const rows = table.storage().scan();
+                            const val = try self.evalExpr(we, table, rows[i]);
                             defer if (val == .text) self.allocator.free(val.text);
                             if (self.valueToBool(val)) {
-                                table.freeRow(table.rows.items[i]);
-                                _ = table.rows.orderedRemove(i);
+                                const rows2 = table.storage().scan();
+                                table.freeRow(rows2[i]);
+                                _ = table.storage().orderedRemove(i);
                             }
                         }
                     } else if (del.where) |where| {
-                        var i: usize = table.rows.items.len;
+                        var i: usize = table.storage().len();
                         while (i > 0) {
                             i -= 1;
-                            if (table.matchesWhere(table.rows.items[i], where)) {
-                                table.freeRow(table.rows.items[i]);
-                                _ = table.rows.orderedRemove(i);
+                            const rows = table.storage().scan();
+                            if (table.matchesWhere(rows[i], where)) {
+                                table.freeRow(rows[i]);
+                                _ = table.storage().orderedRemove(i);
                             }
                         }
                     } else {
                         // DELETE without WHERE: delete all rows
-                        for (table.rows.items) |row| {
+                        const rows = table.storage().scan();
+                        for (rows) |row| {
                             table.freeRow(row);
                         }
-                        table.rows.clearRetainingCapacity();
+                        table.storage().clearRetainingCapacity();
                     }
                     return .ok;
                 }
@@ -1275,7 +1283,7 @@ pub const Database = struct {
                         col_indices.append(self.allocator, idx) catch return .{ .err = "out of memory" };
                     }
 
-                    for (table.rows.items) |*row| {
+                    for (table.storage().scanMut()) |*row| {
                         const matches = if (upd.where_expr) |we| blk: {
                             const val = try self.evalExpr(we, table, row.*);
                             defer if (val == .text) self.allocator.free(val.text);
@@ -1351,7 +1359,7 @@ pub const Database = struct {
                             table.columns = new_cols;
 
                             // Extend each existing row with null_val
-                            for (table.rows.items) |*row| {
+                            for (table.storage().scanMut()) |*row| {
                                 const old_vals = row.values;
                                 var new_vals = self.allocator.alloc(Value, new_col_count) catch return .{ .err = "out of memory" };
                                 @memcpy(new_vals[0..old_vals.len], old_vals);
