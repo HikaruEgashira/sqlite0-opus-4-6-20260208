@@ -101,6 +101,9 @@
 - ~~相関サブクエリ（correlated subqueries）~~ ✓
 - ~~qualified_ref集約（COUNT(t.id), SUM(t.val)）~~ ✓
 - ~~LEFT JOIN COUNT NULL修正（COUNT(right.col) = 0 for unmatched）~~ ✓
+- ~~PRAGMA table_info / table_list~~ ✓
+- ~~sqlite_master / sqlite_schema 仮想テーブル~~ ✓
+- ~~LIMIT offset, count 構文~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

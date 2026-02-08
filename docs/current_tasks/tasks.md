@@ -168,6 +168,14 @@
 - [x] 差分テスト追加（161-170: サブクエリ、COALESCE、マルチJOIN、Window、CTE、UNION、JOIN式、セルフジョイン）
 - Differential Test: **169/169 passing**
 
+### Phase 6d-18: スキーマ情報・構文改善（完了）
+- [x] PRAGMA table_info(table) — カラムメタデータ返却（cid, name, type, notnull, dflt_value, pk）
+- [x] PRAGMA table_list — テーブル一覧返却
+- [x] sqlite_master / sqlite_schema 仮想テーブル（SELECT * FROM sqlite_master）
+- [x] LIMIT offset, count 構文（LIMIT 2, 3 = skip 2 take 3）
+- [x] projected_textsによるメモリ追跡
+- Differential Test: **172/172 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）
