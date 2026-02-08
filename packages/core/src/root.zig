@@ -1546,12 +1546,21 @@ pub const Database = struct {
             .insert => |ins| {
                 defer if (ins.select_sql == null) self.allocator.free(ins.values);
                 defer if (ins.select_sql) |s| self.allocator.free(@constCast(s));
+                defer {
+                    for (ins.extra_rows) |row_values| {
+                        self.allocator.free(row_values);
+                    }
+                    self.allocator.free(ins.extra_rows);
+                }
                 if (self.tables.getPtr(ins.table_name)) |table| {
                     if (ins.select_sql) |select_sql| {
-                        // INSERT INTO ... SELECT
                         return self.executeInsertSelect(table, select_sql);
                     }
                     try table.insertRow(ins.values);
+                    // Insert additional rows
+                    for (ins.extra_rows) |row_values| {
+                        try table.insertRow(row_values);
+                    }
                     return .ok;
                 }
                 return .{ .err = "table not found" };

@@ -179,7 +179,8 @@ pub const Statement = union(enum) {
 
     pub const Insert = struct {
         table_name: []const u8,
-        values: []const []const u8,
+        values: []const []const u8, // first row values (or empty for INSERT SELECT)
+        extra_rows: []const []const []const u8, // additional rows for multi-row INSERT
         select_sql: ?[]const u8 = null, // INSERT INTO ... SELECT (raw SQL)
     };
 
@@ -388,14 +389,37 @@ pub const Parser = struct {
                 .insert = .{
                     .table_name = name_tok.lexeme,
                     .values = &.{},
+                    .extra_rows = &.{},
                     .select_sql = select_sql,
                 },
             };
         }
 
         _ = try self.expect(.kw_values);
-        _ = try self.expect(.lparen);
 
+        const first_row = try self.parseValueTuple();
+
+        // Parse additional rows: , (val1, val2, ...)
+        var extra_rows: std.ArrayList([]const []const u8) = .{};
+        while (self.peek().type == .comma) {
+            _ = self.advance();
+            const row = try self.parseValueTuple();
+            extra_rows.append(self.allocator, row) catch return ParseError.OutOfMemory;
+        }
+
+        _ = try self.expect(.semicolon);
+
+        return Statement{
+            .insert = .{
+                .table_name = name_tok.lexeme,
+                .values = first_row,
+                .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            },
+        };
+    }
+
+    fn parseValueTuple(self: *Parser) ParseError![]const []const u8 {
+        _ = try self.expect(.lparen);
         var values: std.ArrayList([]const u8) = .{};
 
         while (true) {
@@ -403,6 +427,14 @@ pub const Parser = struct {
             switch (val_tok.type) {
                 .integer_literal, .string_literal, .identifier => {
                     values.append(self.allocator, val_tok.lexeme) catch return ParseError.OutOfMemory;
+                },
+                .minus => {
+                    // Handle negative numbers: - followed by integer
+                    const num_tok = self.advance();
+                    if (num_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+                    // Construct negative number string
+                    const neg_str = std.fmt.allocPrint(self.allocator, "-{s}", .{num_tok.lexeme}) catch return ParseError.OutOfMemory;
+                    values.append(self.allocator, neg_str) catch return ParseError.OutOfMemory;
                 },
                 .kw_null => {
                     values.append(self.allocator, "NULL") catch return ParseError.OutOfMemory;
@@ -418,14 +450,7 @@ pub const Parser = struct {
         }
 
         _ = try self.expect(.rparen);
-        _ = try self.expect(.semicolon);
-
-        return Statement{
-            .insert = .{
-                .table_name = name_tok.lexeme,
-                .values = values.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
-            },
-        };
+        return values.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
     }
 
     fn extractInsertSelectSQL(self: *Parser) ParseError![]const u8 {
