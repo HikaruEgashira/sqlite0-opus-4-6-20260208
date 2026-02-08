@@ -48,6 +48,7 @@ pub const Database = struct {
     projected_rows: ?[]Row = null,
     projected_values: ?[][]Value = null,
     projected_texts: ?[][]const u8 = null, // Text values allocated by aggregate functions
+    projected_column_names: ?[][]const u8 = null, // Column names from last SELECT
     // Transaction state
     in_transaction: bool = false,
     transaction_snapshot: ?[]TableSnapshot = null,
@@ -83,6 +84,13 @@ pub const Database = struct {
             }
             self.allocator.free(pv);
             self.projected_values = null;
+        }
+        if (self.projected_column_names) |pcn| {
+            for (pcn) |name| {
+                self.allocator.free(name);
+            }
+            self.allocator.free(pcn);
+            self.projected_column_names = null;
         }
         if (self.projected_rows) |pr| {
             self.allocator.free(pr);
@@ -1110,6 +1118,45 @@ pub const Database = struct {
         return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
     }
 
+    /// Execute CREATE TABLE ... AS SELECT
+    fn executeCreateTableAsSelect(self: *Database, table_name: []const u8, select_sql: []const u8) !ExecuteResult {
+        // Execute the SELECT query
+        const result = try self.execute(select_sql);
+        switch (result) {
+            .rows => |rows| {
+                // Get column names from projected_column_names or use generic names
+                const ncols = if (rows.len > 0) rows[0].values.len else if (self.projected_column_names) |cn| cn.len else 0;
+                var columns = try self.allocator.alloc(Column, ncols);
+                for (0..ncols) |i| {
+                    const col_name = if (self.projected_column_names) |cn| blk: {
+                        if (i < cn.len) break :blk try dupeStr(self.allocator, cn[i]);
+                        break :blk try std.fmt.allocPrint(self.allocator, "column{d}", .{i});
+                    } else try std.fmt.allocPrint(self.allocator, "column{d}", .{i});
+                    columns[i] = .{
+                        .name = col_name,
+                        .col_type = "TEXT",
+                        .is_primary_key = false,
+                    };
+                }
+                const tname = try dupeStr(self.allocator, table_name);
+                var table = Table.init(self.allocator, tname, columns);
+                // Insert all rows
+                for (rows) |row| {
+                    var text_values = try self.allocator.alloc([]const u8, ncols);
+                    defer self.allocator.free(text_values);
+                    for (row.values, 0..) |val, i| {
+                        text_values[i] = self.valueToText(val);
+                    }
+                    try table.insertRow(text_values);
+                    for (text_values) |tv| self.allocator.free(tv);
+                }
+                try self.tables.put(tname, table);
+                return .ok;
+            },
+            else => return .{ .err = "CREATE TABLE AS SELECT failed" },
+        }
+    }
+
     /// Evaluate window functions and fill in values in projected rows
     fn evaluateWindowFunctions(
         self: *Database,
@@ -2004,6 +2051,12 @@ pub const Database = struct {
                 const proj_rows = try self.allocator.alloc(Row, result_rows.len);
                 @memcpy(proj_rows, result_rows);
                 self.projected_rows = proj_rows;
+                // Store column names from table
+                var col_names = try self.allocator.alloc([]const u8, table.columns.len);
+                for (table.columns, 0..) |col, i| {
+                    col_names[i] = try dupeStr(self.allocator, col.name);
+                }
+                self.projected_column_names = col_names;
                 return .{ .rows = proj_rows };
             }
 
@@ -2129,6 +2182,23 @@ pub const Database = struct {
             }
         }
 
+        // Store column names for CREATE TABLE AS SELECT
+        var col_names = try self.allocator.alloc([]const u8, expr_count);
+        for (0..expr_count) |i| {
+            if (i < sel.aliases.len) {
+                if (sel.aliases[i]) |alias| {
+                    col_names[i] = try dupeStr(self.allocator, alias);
+                    continue;
+                }
+            }
+            if (sel.result_exprs[i].* == .column_ref) {
+                col_names[i] = try dupeStr(self.allocator, sel.result_exprs[i].column_ref);
+            } else {
+                col_names[i] = try std.fmt.allocPrint(self.allocator, "column{d}", .{i});
+            }
+        }
+        self.projected_column_names = col_names;
+
         // Apply DISTINCT on evaluated results
         if (sel.distinct and row_count > 0) {
             var write_idx: usize = 0;
@@ -2213,6 +2283,12 @@ pub const Database = struct {
         }
         self.projected_rows = proj_rows;
         self.projected_values = proj_values;
+        // Store column names
+        var col_names = try self.allocator.alloc([]const u8, sel.columns.len);
+        for (sel.columns, 0..) |col, i| {
+            col_names[i] = try dupeStr(self.allocator, col);
+        }
+        self.projected_column_names = col_names;
         return .{ .rows = proj_rows };
     }
 
@@ -2530,9 +2606,11 @@ pub const Database = struct {
         const saved_rows = self.projected_rows;
         const saved_values = self.projected_values;
         const saved_texts = self.projected_texts;
+        const saved_col_names = self.projected_column_names;
         self.projected_rows = null;
         self.projected_values = null;
         self.projected_texts = null;
+        self.projected_column_names = null;
 
         const result = try self.execute(subquery_sql);
 
@@ -2561,6 +2639,7 @@ pub const Database = struct {
         self.projected_rows = saved_rows;
         self.projected_values = saved_values;
         self.projected_texts = saved_texts;
+        self.projected_column_names = saved_col_names;
 
         return values;
     }
@@ -2570,9 +2649,11 @@ pub const Database = struct {
         const saved_rows = self.projected_rows;
         const saved_values = self.projected_values;
         const saved_texts = self.projected_texts;
+        const saved_col_names = self.projected_column_names;
         self.projected_rows = null;
         self.projected_values = null;
         self.projected_texts = null;
+        self.projected_column_names = null;
 
         const result = try self.execute(select_sql);
 
@@ -2596,6 +2677,7 @@ pub const Database = struct {
                 self.projected_rows = saved_rows;
                 self.projected_values = saved_values;
                 self.projected_texts = saved_texts;
+                self.projected_column_names = saved_col_names;
                 return .{ .err = e };
             },
             .ok => {},
@@ -2605,6 +2687,7 @@ pub const Database = struct {
         self.projected_rows = saved_rows;
         self.projected_values = saved_values;
         self.projected_texts = saved_texts;
+        self.projected_column_names = saved_col_names;
         return .ok;
     }
 
@@ -3051,6 +3134,11 @@ pub const Database = struct {
                 defer self.allocator.free(ct.columns);
                 if (ct.if_not_exists and self.tables.contains(ct.table_name)) {
                     return .ok;
+                }
+                // CREATE TABLE ... AS SELECT
+                if (ct.as_select_sql) |select_sql| {
+                    defer self.allocator.free(@constCast(select_sql));
+                    return self.executeCreateTableAsSelect(ct.table_name, select_sql);
                 }
                 const table_name = try dupeStr(self.allocator, ct.table_name);
                 var columns = try self.allocator.alloc(Column, ct.columns.len);
