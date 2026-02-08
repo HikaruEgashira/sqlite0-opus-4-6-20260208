@@ -305,6 +305,21 @@ pub const Database = struct {
                         return .null_val;
                     }
                 }
+                // For JOIN context, use alias offsets to resolve qualified references
+                if (self.join_alias_offsets) |offsets| {
+                    for (offsets) |ao| {
+                        if (std.mem.eql(u8, qr.table, ao.alias) or std.mem.eql(u8, qr.table, ao.name)) {
+                            if (ao.table.findColumnIndex(qr.column)) |ci| {
+                                const idx = ao.offset + ci;
+                                if (idx < row.values.len) {
+                                    const val = row.values[idx];
+                                    return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
                 // For non-JOIN context, just use the column name
                 const col_idx = tbl.findColumnIndex(qr.column) orelse return .null_val;
                 const val = row.values[col_idx];
@@ -4407,6 +4422,29 @@ pub const Database = struct {
             joined_values.deinit(self.allocator);
             joined_rows.deinit(self.allocator);
             return agg_result;
+        }
+
+        // Check if any select_expr is a complex expression (not simple column)
+        const has_expr = blk: {
+            for (sel.select_exprs) |expr| {
+                if (expr == .expr) break :blk true;
+            }
+            break :blk false;
+        };
+
+        // If expressions exist, use evaluateExprSelect with combined table
+        if (has_expr) {
+            const combined_cols = try self.allocator.alloc(Column, combined_cols_list.items.len);
+            @memcpy(combined_cols, combined_cols_list.items);
+            var tmp_table = Table.init(self.allocator, "joined", combined_cols);
+            self.join_alias_offsets = alias_offsets.items;
+            const expr_result = try self.evaluateExprSelect(sel, &tmp_table, result_rows);
+            self.join_alias_offsets = null;
+            self.allocator.free(combined_cols);
+            for (joined_values.items) |v| self.allocator.free(v);
+            joined_values.deinit(self.allocator);
+            joined_rows.deinit(self.allocator);
+            return expr_result;
         }
 
         // SELECT * for JOIN
