@@ -15,7 +15,21 @@
 - [x] 組込み関数: ABS, LENGTH, UPPER, LOWER, TRIM, TYPEOF, COALESCE, NULLIF
 - [x] MAX/MIN スカラー関数（複数引数対応）
 - [x] テーブルなしSELECT（FROM句なし式評価）
-- [x] Differential Test: **58/58 passing**
+- [x] カラムエイリアス（AS）
+- [x] 複数ORDER BYカラム
+- [x] UPDATE SET col = expr（式による更新）
+- [x] Differential Test: **61/61 passing**
+
+### Phase 6d-5: SQL機能充実（完了）
+- [x] IIF関数
+- [x] CAST式
+- [x] REPLACE文
+- [x] SUBSTR / INSTR / REPLACE関数
+- [x] GROUP_CONCAT集約関数（カスタムセパレーター対応）
+- [x] INSERT OR IGNORE / INSERT OR REPLACE
+- [x] HEX / UNICODE / CHAR / ZEROBLOB / PRINTF関数
+- [x] UPDATE SET col = expr（式による更新）
+- [x] Differential Test: **68/68 passing**
 
 ### 次のステップ
 

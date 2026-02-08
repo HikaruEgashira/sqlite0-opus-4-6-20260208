@@ -34,12 +34,16 @@
 - ~~ABS / LENGTH / UPPER / LOWER / TRIM / TYPEOF 関数~~ ✓
 - ~~テーブルなしSELECT（SELECT 1+2; SELECT ABS(-10);）~~ ✓
 - ~~MAX / MIN スカラー関数（複数引数）~~ ✓
-- カラムエイリアス（AS）
-- IIF 関数
-- 型キャスト（CAST）
-- REPLACE文
-- UPDATE SET col = expr（式による更新）
-- 複数ORDER BYカラム
+- ~~カラムエイリアス（AS）~~ ✓
+- ~~IIF 関数~~ ✓
+- ~~型キャスト（CAST）~~ ✓
+- ~~REPLACE文~~ ✓
+- ~~SUBSTR / INSTR / REPLACE関数~~ ✓
+- ~~GROUP_CONCAT集約関数~~ ✓
+- ~~INSERT OR IGNORE / INSERT OR REPLACE~~ ✓
+- ~~HEX / UNICODE / CHAR / ZEROBLOB / PRINTF関数~~ ✓
+- ~~UPDATE SET col = expr（式による更新）~~ ✓
+- ~~複数ORDER BYカラム~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

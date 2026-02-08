@@ -1,0 +1,12 @@
+CREATE TABLE t1 (id INTEGER, dept TEXT, val INTEGER);
+INSERT INTO t1 VALUES (1, 'eng', 10);
+INSERT INTO t1 VALUES (2, 'eng', 20);
+INSERT INTO t1 VALUES (3, 'sales', 15);
+INSERT INTO t1 VALUES (4, 'hr', 30);
+INSERT INTO t1 VALUES (5, 'eng', 5);
+
+-- HAVING with COUNT
+SELECT dept, COUNT(*) FROM t1 GROUP BY dept HAVING COUNT(*) > 1;
+
+-- HAVING with SUM
+SELECT dept, SUM(val) FROM t1 GROUP BY dept HAVING SUM(val) > 20;
