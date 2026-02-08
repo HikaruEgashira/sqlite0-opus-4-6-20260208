@@ -1820,6 +1820,10 @@ pub const Database = struct {
             .update => |upd| {
                 defer self.allocator.free(upd.set_columns);
                 defer self.allocator.free(upd.set_values);
+                defer {
+                    for (upd.set_exprs) |e| self.freeExprDeep(e);
+                    self.allocator.free(upd.set_exprs);
+                }
                 defer if (upd.where_expr) |we| self.freeWhereExpr(we);
                 if (self.tables.getPtr(upd.table_name)) |table| {
                     // Validate all columns exist
@@ -1839,23 +1843,33 @@ pub const Database = struct {
                             break :blk self.valueToBool(val);
                         } else if (upd.where) |where| table.matchesWhere(row.*, where) else true;
                         if (matches) {
-                            // Update each column
-                            for (upd.set_columns, upd.set_values, col_indices.items) |col_name, val_str, col_idx| {
-                                _ = col_name; // Already validated above
-                                // Free old text value if needed
-                                switch (row.values[col_idx]) {
-                                    .text => |t| self.allocator.free(t),
-                                    else => {},
+                            if (upd.set_exprs.len > 0) {
+                                // Expression-based SET: evaluate each expression
+                                for (upd.set_exprs, col_indices.items) |expr, col_idx| {
+                                    const new_val = try self.evalExpr(expr, table, row.*);
+                                    // Free old text value if needed
+                                    switch (row.values[col_idx]) {
+                                        .text => |t| self.allocator.free(t),
+                                        else => {},
+                                    }
+                                    row.values[col_idx] = new_val;
                                 }
-                                // Set new value
-                                if (val_str.len >= 2 and val_str[0] == '\'') {
-                                    row.values[col_idx] = .{ .text = try dupeStr(self.allocator, val_str[1 .. val_str.len - 1]) };
-                                } else {
-                                    const num = std.fmt.parseInt(i64, val_str, 10) catch {
-                                        row.values[col_idx] = .{ .text = try dupeStr(self.allocator, val_str) };
-                                        continue;
-                                    };
-                                    row.values[col_idx] = .{ .integer = num };
+                            } else {
+                                // Legacy literal-based SET
+                                for (upd.set_values, col_indices.items) |val_str, col_idx| {
+                                    switch (row.values[col_idx]) {
+                                        .text => |t| self.allocator.free(t),
+                                        else => {},
+                                    }
+                                    if (val_str.len >= 2 and val_str[0] == '\'') {
+                                        row.values[col_idx] = .{ .text = try dupeStr(self.allocator, val_str[1 .. val_str.len - 1]) };
+                                    } else {
+                                        const num = std.fmt.parseInt(i64, val_str, 10) catch {
+                                            row.values[col_idx] = .{ .text = try dupeStr(self.allocator, val_str) };
+                                            continue;
+                                        };
+                                        row.values[col_idx] = .{ .integer = num };
+                                    }
                                 }
                             }
                         }

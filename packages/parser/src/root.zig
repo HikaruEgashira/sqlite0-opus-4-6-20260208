@@ -243,7 +243,8 @@ pub const Statement = union(enum) {
     pub const Update = struct {
         table_name: []const u8,
         set_columns: []const []const u8,
-        set_values: []const []const u8,
+        set_values: []const []const u8, // kept for backward compat (empty when set_exprs used)
+        set_exprs: []const *const Expr = &.{}, // expression ASTs for SET values
         where: ?WhereClause,
         where_expr: ?*const Expr = null,
     };
@@ -1382,32 +1383,20 @@ pub const Parser = struct {
 
         var set_columns: std.ArrayList([]const u8) = .{};
         defer set_columns.deinit(self.allocator);
-        var set_values: std.ArrayList([]const u8) = .{};
-        defer set_values.deinit(self.allocator);
+        var set_exprs: std.ArrayList(*const Expr) = .{};
 
-        // Parse first assignment
-        const col_tok = try self.expect(.identifier);
-        try set_columns.append(self.allocator, col_tok.lexeme);
-        _ = try self.expect(.equals);
-        const val_tok = self.advance();
-        switch (val_tok.type) {
-            .integer_literal, .string_literal, .identifier => {},
-            else => return ParseError.UnexpectedToken,
-        }
-        try set_values.append(self.allocator, val_tok.lexeme);
-
-        // Parse additional assignments (comma-separated)
-        while (self.peek().type == .comma) {
-            _ = self.advance(); // consume comma
-            const next_col = try self.expect(.identifier);
-            try set_columns.append(self.allocator, next_col.lexeme);
+        while (true) {
+            const col_tok = try self.expect(.identifier);
+            try set_columns.append(self.allocator, col_tok.lexeme);
             _ = try self.expect(.equals);
-            const next_val = self.advance();
-            switch (next_val.type) {
-                .integer_literal, .string_literal, .identifier => {},
-                else => return ParseError.UnexpectedToken,
+            const expr = try self.parseExpr();
+            set_exprs.append(self.allocator, expr) catch return ParseError.OutOfMemory;
+
+            if (self.peek().type == .comma) {
+                _ = self.advance();
+            } else {
+                break;
             }
-            try set_values.append(self.allocator, next_val.lexeme);
         }
 
         var where_expr: ?*const Expr = null;
@@ -1420,7 +1409,8 @@ pub const Parser = struct {
         return Statement{ .update = .{
             .table_name = name_tok.lexeme,
             .set_columns = try set_columns.toOwnedSlice(self.allocator),
-            .set_values = try set_values.toOwnedSlice(self.allocator),
+            .set_values = &.{},
+            .set_exprs = set_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             .where = null,
             .where_expr = where_expr,
         } };
@@ -1760,11 +1750,14 @@ test "parse UPDATE" {
         .update => |upd| {
             defer allocator.free(upd.set_columns);
             defer allocator.free(upd.set_values);
+            defer {
+                for (upd.set_exprs) |e| Parser.freeExpr(allocator, e);
+                allocator.free(upd.set_exprs);
+            }
             try std.testing.expectEqualStrings("users", upd.table_name);
             try std.testing.expect(upd.set_columns.len == 1);
             try std.testing.expectEqualStrings("name", upd.set_columns[0]);
-            try std.testing.expect(upd.set_values.len == 1);
-            try std.testing.expectEqualStrings("'bob'", upd.set_values[0]);
+            try std.testing.expect(upd.set_exprs.len == 1);
             try std.testing.expect(upd.where_expr != null);
             defer Parser.freeExpr(allocator, upd.where_expr.?);
         },
