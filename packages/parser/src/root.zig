@@ -12,6 +12,7 @@ pub const ColumnDef = struct {
     default_value: ?[]const u8 = null,
     not_null: bool = false,
     autoincrement: bool = false,
+    check_expr_sql: ?[]const u8 = null,
 };
 
 pub const SortOrder = enum {
@@ -437,7 +438,8 @@ pub const Parser = struct {
             var default_val: ?[]const u8 = null;
             var not_null = false;
             var autoincrement = false;
-            // Parse column constraints (PRIMARY KEY, NOT NULL, DEFAULT, AUTOINCREMENT)
+            var check_sql: ?[]const u8 = null;
+            // Parse column constraints (PRIMARY KEY, NOT NULL, DEFAULT, AUTOINCREMENT, CHECK)
             while (true) {
                 if (self.peek().type == .kw_primary) {
                     _ = self.advance();
@@ -454,6 +456,32 @@ pub const Parser = struct {
                     _ = self.advance();
                     const def_tok = self.advance();
                     default_val = def_tok.lexeme;
+                } else if (self.peek().type == .kw_check) {
+                    _ = self.advance();
+                    _ = try self.expect(.lparen);
+                    // Capture the SQL text of the CHECK expression
+                    const start_pos = self.pos;
+                    var paren_depth: usize = 1;
+                    while (self.pos < self.tokens.len) {
+                        if (self.tokens[self.pos].type == .lparen) {
+                            paren_depth += 1;
+                        } else if (self.tokens[self.pos].type == .rparen) {
+                            paren_depth -= 1;
+                            if (paren_depth == 0) break;
+                        }
+                        self.pos += 1;
+                    }
+                    // Extract SQL text from source between start token and closing paren
+                    if (start_pos < self.tokens.len and self.pos < self.tokens.len) {
+                        const start_lexeme = self.tokens[start_pos].lexeme;
+                        const end_lexeme = self.tokens[self.pos].lexeme;
+                        const src_start = @intFromPtr(start_lexeme.ptr);
+                        const src_end = @intFromPtr(end_lexeme.ptr);
+                        if (src_end > src_start) {
+                            check_sql = start_lexeme.ptr[0 .. src_end - src_start];
+                        }
+                    }
+                    _ = try self.expect(.rparen);
                 } else break;
             }
 
@@ -464,6 +492,7 @@ pub const Parser = struct {
                 .default_value = default_val,
                 .not_null = not_null,
                 .autoincrement = autoincrement,
+                .check_expr_sql = check_sql,
             }) catch return ParseError.OutOfMemory;
 
             if (self.peek().type == .comma) {
@@ -621,9 +650,10 @@ pub const Parser = struct {
                     // Handle negative numbers: - followed by integer
                     const num_tok = self.advance();
                     if (num_tok.type != .integer_literal) return ParseError.UnexpectedToken;
-                    // Construct negative number string
-                    const neg_str = std.fmt.allocPrint(self.allocator, "-{s}", .{num_tok.lexeme}) catch return ParseError.OutOfMemory;
-                    values.append(self.allocator, neg_str) catch return ParseError.OutOfMemory;
+                    // Use source slice spanning minus and integer tokens (no allocation)
+                    const start = val_tok.lexeme.ptr;
+                    const end = num_tok.lexeme.ptr + num_tok.lexeme.len;
+                    values.append(self.allocator, start[0 .. @intFromPtr(end) - @intFromPtr(start)]) catch return ParseError.OutOfMemory;
                 },
                 .kw_null => {
                     values.append(self.allocator, "NULL") catch return ParseError.OutOfMemory;

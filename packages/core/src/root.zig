@@ -953,6 +953,72 @@ pub const Database = struct {
         return false;
     }
 
+    /// Validate CHECK constraints for a row about to be inserted
+    fn validateCheckConstraints(self: *Database, table: *Table, raw_values: []const []const u8) !bool {
+        // Build a temporary row for evaluation
+        var values = try self.allocator.alloc(Value, raw_values.len);
+        defer {
+            for (values) |v| {
+                if (v == .text) self.allocator.free(v.text);
+            }
+            self.allocator.free(values);
+        }
+        for (raw_values, 0..) |raw, i| {
+            if (std.mem.eql(u8, raw, "NULL")) {
+                values[i] = .null_val;
+            } else if (raw.len >= 2 and raw[0] == '\'') {
+                values[i] = .{ .text = try dupeStr(self.allocator, raw[1 .. raw.len - 1]) };
+            } else {
+                const num = std.fmt.parseInt(i64, raw, 10) catch {
+                    values[i] = .{ .text = try dupeStr(self.allocator, raw) };
+                    continue;
+                };
+                values[i] = .{ .integer = num };
+            }
+        }
+        const temp_row = Row{ .values = values };
+
+        for (table.columns) |col| {
+            if (col.check_expr_sql) |check_sql| {
+                // Wrap as SELECT <expr>; to parse as expression
+                const select_sql = std.fmt.allocPrint(self.allocator, "SELECT {s};", .{check_sql}) catch return true;
+                defer self.allocator.free(select_sql);
+                var tok = Tokenizer.init(select_sql);
+                const tokens = tok.tokenize(self.allocator) catch return true;
+                defer self.allocator.free(tokens);
+                var p = Parser.init(self.allocator, tokens);
+                const stmt = p.parse() catch return true;
+                switch (stmt) {
+                    .select_stmt => |sel| {
+                        defer self.allocator.free(sel.columns);
+                        defer self.allocator.free(sel.select_exprs);
+                        defer self.allocator.free(sel.aliases);
+                        defer {
+                            for (sel.result_exprs) |e| self.freeExprDeep(e);
+                            self.allocator.free(sel.result_exprs);
+                        }
+                        defer if (sel.where_expr) |we| self.freeWhereExpr(we);
+                        defer if (sel.group_by) |gb| self.allocator.free(gb);
+                        defer if (sel.having_expr) |he| self.freeExprDeep(he);
+                        defer if (sel.order_by) |ob| {
+                            for (ob.items) |item| {
+                                if (item.expr) |e| self.freeExprDeep(e);
+                            }
+                            self.allocator.free(ob.items);
+                        };
+                        if (sel.result_exprs.len > 0) {
+                            const val = self.evalExpr(sel.result_exprs[0], table, temp_row) catch return true;
+                            defer if (val == .text) self.allocator.free(val.text);
+                            if (!self.valueToBool(val)) return false;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return true;
+    }
+
     /// REPLACE INTO: delete existing row with matching PK, then insert
     fn replaceRow(self: *Database, table: *Table, raw_values: []const []const u8) void {
         // Find primary key column index
@@ -2562,6 +2628,7 @@ pub const Database = struct {
                         .default_value = col.default_value,
                         .not_null = col.not_null,
                         .autoincrement = col.autoincrement,
+                        .check_expr_sql = col.check_expr_sql,
                     };
                 }
                 var table = Table.init(self.allocator, table_name, columns);
@@ -2592,6 +2659,10 @@ pub const Database = struct {
                     else
                         ins.values;
                     defer if (ins.column_names.len > 0 and values.ptr != ins.values.ptr) self.allocator.free(values);
+                    // Validate CHECK constraints
+                    if (!try self.validateCheckConstraints(table, values)) {
+                        return .{ .err = "CHECK constraint failed" };
+                    }
                     if (ins.replace_mode) {
                         self.replaceRow(table, values);
                     } else if (ins.ignore_mode) {
@@ -2607,6 +2678,9 @@ pub const Database = struct {
                         else
                             row_values;
                         defer if (ins.column_names.len > 0 and expanded.ptr != row_values.ptr) self.allocator.free(expanded);
+                        if (!try self.validateCheckConstraints(table, expanded)) {
+                            return .{ .err = "CHECK constraint failed" };
+                        }
                         if (ins.replace_mode) {
                             self.replaceRow(table, expanded);
                         } else if (ins.ignore_mode) {
@@ -2853,6 +2927,29 @@ test "create table and insert" {
                 else => return error.UnexpectedToken,
             }
         },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "CHECK constraint rejects invalid values" {
+    const allocator = std.testing.allocator;
+    var db = Database.init(allocator);
+    defer db.deinit();
+
+    _ = try db.execute("CREATE TABLE t1 (id INTEGER, score INTEGER CHECK(score >= 0));");
+    const r1 = try db.execute("INSERT INTO t1 VALUES (1, 50);");
+    try std.testing.expectEqual(ExecuteResult.ok, r1);
+
+    const r2 = try db.execute("INSERT INTO t1 VALUES (2, -5);");
+    switch (r2) {
+        .err => |msg| try std.testing.expectEqualStrings("CHECK constraint failed", msg),
+        else => return error.UnexpectedToken,
+    }
+
+    // Verify only valid row was inserted
+    const r3 = try db.execute("SELECT * FROM t1;");
+    switch (r3) {
+        .rows => |rows| try std.testing.expectEqual(@as(usize, 1), rows.len),
         else => return error.UnexpectedToken,
     }
 }
