@@ -14,6 +14,50 @@ fn printStr(file: std.fs.File, comptime fmt: []const u8, args: anytype) !void {
     try writeAll(file, slice);
 }
 
+fn readLine(stdin: std.fs.File, line_buf: *[4096]u8) !?[]const u8 {
+    var line_len: usize = 0;
+    while (line_len < line_buf.len) {
+        var byte: [1]u8 = undefined;
+        const n = stdin.read(&byte) catch break;
+        if (n == 0) {
+            if (line_len == 0) return null;
+            break;
+        }
+        if (byte[0] == '\n') break;
+        line_buf[line_len] = byte[0];
+        line_len += 1;
+    }
+    return line_buf[0..line_len];
+}
+
+fn endsWithSemicolon(s: []const u8) bool {
+    // Strip trailing inline comment (-- ...) before checking
+    var effective_end: usize = s.len;
+    // Find last "--" that isn't inside quotes
+    var in_single_quote = false;
+    var in_double_quote = false;
+    var j: usize = 0;
+    while (j < s.len) : (j += 1) {
+        if (s[j] == '\'' and !in_double_quote) {
+            in_single_quote = !in_single_quote;
+        } else if (s[j] == '"' and !in_single_quote) {
+            in_double_quote = !in_double_quote;
+        } else if (!in_single_quote and !in_double_quote and j + 1 < s.len and s[j] == '-' and s[j + 1] == '-') {
+            effective_end = j;
+            break;
+        }
+    }
+    // Check if the effective content ends with ';'
+    var i: usize = effective_end;
+    while (i > 0) {
+        i -= 1;
+        if (!std.ascii.isWhitespace(s[i])) {
+            return s[i] == ';';
+        }
+    }
+    return false;
+}
+
 pub fn main() !void {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
@@ -28,31 +72,30 @@ pub fn main() !void {
     var db = core.Database.init(allocator);
     defer db.deinit();
 
-    var buf: [4096]u8 = undefined;
+    var line_buf: [4096]u8 = undefined;
+    var sql_buf: std.ArrayList(u8) = .{};
+    defer sql_buf.deinit(allocator);
+
     while (true) {
-        try writeAll(stdout, "sqlite0> ");
-
-        var line_len: usize = 0;
-        while (line_len < buf.len) {
-            var byte: [1]u8 = undefined;
-            const n = stdin.read(&byte) catch break;
-            if (n == 0) {
-                if (line_len == 0) {
-                    try writeAll(stdout, "\nBye!\n");
-                    return;
-                }
-                break;
-            }
-            if (byte[0] == '\n') break;
-            buf[line_len] = byte[0];
-            line_len += 1;
+        const is_continuation = sql_buf.items.len > 0;
+        if (is_continuation) {
+            try writeAll(stdout, "   ...> ");
+        } else {
+            try writeAll(stdout, "sqlite0> ");
         }
-        const line = buf[0..line_len];
 
-        if (line.len == 0) continue;
+        const line = try readLine(stdin, &line_buf) orelse {
+            if (is_continuation) {
+                sql_buf.clearRetainingCapacity();
+            }
+            try writeAll(stdout, "\nBye!\n");
+            return;
+        };
 
-        // Handle dot-commands
-        if (line.len > 0 and line[0] == '.') {
+        if (line.len == 0 and !is_continuation) continue;
+
+        // Handle dot-commands (only on first line)
+        if (!is_continuation and line.len > 0 and line[0] == '.') {
             if (std.mem.eql(u8, line, ".tables")) {
                 var it = db.tables.keyIterator();
                 while (it.next()) |key| {
@@ -89,10 +132,31 @@ pub fn main() !void {
             }
         }
 
-        const result = db.execute(line) catch |err| {
+        // Append line to SQL buffer
+        if (sql_buf.items.len > 0) {
+            try sql_buf.append(allocator, ' ');
+        }
+        try sql_buf.appendSlice(allocator, line);
+
+        // Check if statement is complete (ends with semicolon)
+        if (!endsWithSemicolon(sql_buf.items)) {
+            // Skip comment-only lines that won't end with semicolon
+            const trimmed = std.mem.trim(u8, sql_buf.items, " \t\r\n");
+            if (trimmed.len >= 2 and trimmed[0] == '-' and trimmed[1] == '-') {
+                sql_buf.clearRetainingCapacity();
+                continue;
+            }
+            continue;
+        }
+
+        // Execute the complete SQL statement
+        const result = db.execute(sql_buf.items) catch |err| {
             try printStr(stdout, "Error: {}\n", .{err});
+            sql_buf.clearRetainingCapacity();
             continue;
         };
+
+        sql_buf.clearRetainingCapacity();
 
         switch (result) {
             .ok => try writeAll(stdout, "OK\n"),

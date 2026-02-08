@@ -29,7 +29,7 @@ for case_file in "$CASES_DIR"/*.sql; do
 
     # Run with sqlite0 (our implementation)
     # Remove prompt prefix, banner lines, OK lines, and empty lines
-    sqlite0_output=$("$SQLITE0" < "$case_file" 2>/dev/null | sed -e ':a' -e 's/^sqlite0> //' -e 'ta' | grep -v "^sqlite0 v" | grep -v "^Enter SQL" | grep -v "^Bye" | grep -v "^OK$" | sed '/^$/d' || true)
+    sqlite0_output=$("$SQLITE0" < "$case_file" 2>/dev/null | sed -e ':a' -e 's/^sqlite0> //' -e 'ta' -e ':b' -e 's/^   \.\.\.> //' -e 'tb' | grep -v "^sqlite0 v" | grep -v "^Enter SQL" | grep -v "^Bye" | grep -v "^OK$" | sed '/^$/d' || true)
     # Also strip empty lines from sqlite3 output for consistent NULL handling
     sqlite3_output=$(echo "$sqlite3_output" | sed '/^$/d')
 
