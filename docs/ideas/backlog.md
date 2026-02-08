@@ -49,6 +49,19 @@
 - ~~ORDER BY式サポート~~ ✓
 - ~~テーブルエイリアス~~ ✓
 - ~~CROSS JOIN / カンマ区切りFROM~~ ✓
+- ~~ROUND / IFNULL / RANDOM 関数~~ ✓
+- ~~TOTAL集約関数~~ ✓
+- ~~EXISTS / NOT EXISTS サブクエリ~~ ✓
+- ~~SUM(DISTINCT) / AVG(DISTINCT) / GROUP_CONCAT(DISTINCT)~~ ✓
+- ~~RIGHT JOIN~~ ✓
+- ~~DEFAULT値（CREATE TABLE + INSERT列リスト）~~ ✓
+- Date/Time関数 (datetime, date, strftime)
+- ビット演算子 (&, |, ~, <<, >>)
+- FULL OUTER JOIN
+- Window関数 (ROW_NUMBER, RANK, etc.)
+- CHECK制約
+- 外部キー (FOREIGN KEY)
+- AUTOINCREMENT
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

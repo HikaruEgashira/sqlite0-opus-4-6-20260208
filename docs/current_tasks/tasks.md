@@ -40,6 +40,29 @@
 - [x] CROSS JOIN / カンマ区切りFROM
 - [x] Differential Test: **76/76 passing**
 
+### Phase 6d-7: SQL機能充実（完了）
+- [x] JOINのWHERE式統一（WhereClause→Expr）
+- [x] DELETE式ベースWHERE
+- [x] LTRIM / RTRIM関数
+- [x] 複数カラムGROUP BY
+- [x] 複数JOIN対応（3テーブル以上）
+- [x] HAVING式ベース化（evalGroupExpr）
+- [x] COALESCE式テスト追加
+- Differential Test: **83/83 passing**
+
+### Phase 6d-8: SQL機能充実（完了）
+- [x] ROUND関数（SQLite互換float出力）
+- [x] IFNULL関数
+- [x] RANDOM関数
+- [x] TOTAL集約関数（空集合で0.0返却）
+- [x] EXISTS / NOT EXISTS サブクエリ
+- [x] SUM(DISTINCT), AVG(DISTINCT), GROUP_CONCAT(DISTINCT)
+- [x] RIGHT JOIN
+- [x] DEFAULT値サポート（CREATE TABLE + INSERT列リスト）
+- [x] キーワードをエイリアスとして使用可能（expectAlias）
+- [x] ネスト関数呼び出しテスト
+- Differential Test: **91/91 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）
