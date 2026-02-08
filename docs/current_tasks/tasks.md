@@ -158,6 +158,16 @@
 - [x] AliasOffset追跡によるJOIN集約の正しいカラム解決
 - Differential Test: **158/158 passing**
 
+### Phase 6d-17: SQL機能充実・REPL改善（完了）
+- [x] JOIN DISTINCT / LIMIT / OFFSET対応
+- [x] マルチラインSQL対応（REPL: `;`まで継続入力、`...>`プロンプト）
+- [x] JOINクエリでの式評価（SELECT e.salary * 12, UPPER(d.name)）
+- [x] evalExprのqualified_refでjoin_alias_offsets対応（重複カラム名解決）
+- [x] 集約クエリORDER BYのqualified_ref/column_ref式解決
+- [x] セルフジョイン対応テスト
+- [x] 差分テスト追加（161-170: サブクエリ、COALESCE、マルチJOIN、Window、CTE、UNION、JOIN式、セルフジョイン）
+- Differential Test: **169/169 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）

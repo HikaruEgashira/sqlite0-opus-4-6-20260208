@@ -72,6 +72,9 @@
 - ~~Window running aggregates (SUM/AVG OVER ORDER BY)~~ ✓
 - ~~Math functions (CEIL, FLOOR, SQRT, POWER, LOG, etc.)~~ ✓
 - ~~RETURNING clause (INSERT/UPDATE/DELETE)~~ ✓
+- ~~JOIN DISTINCT / LIMIT / OFFSET~~ ✓
+- ~~JOIN式評価（SELECT e.salary * 12 FROM e JOIN d ...）~~ ✓
+- ~~マルチラインREPL~~ ✓
 - GENERATED COLUMNS
 - ~~UPSERT (ON CONFLICT)~~ ✓
 - ~~Common Table Expressions (WITH/CTE)~~ ✓
