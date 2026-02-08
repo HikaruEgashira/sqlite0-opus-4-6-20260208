@@ -60,6 +60,8 @@ pub const TokenType = enum {
     kw_like,
     kw_union,
     kw_all,
+    kw_intersect,
+    kw_except,
 
     // Literals
     integer_literal,
@@ -273,6 +275,8 @@ pub const Tokenizer = struct {
             .{ "LIKE", TokenType.kw_like },
             .{ "UNION", TokenType.kw_union },
             .{ "ALL", TokenType.kw_all },
+            .{ "INTERSECT", TokenType.kw_intersect },
+            .{ "EXCEPT", TokenType.kw_except },
         };
 
         inline for (keywords) |entry| {

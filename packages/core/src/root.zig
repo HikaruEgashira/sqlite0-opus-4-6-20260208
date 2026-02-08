@@ -22,6 +22,7 @@ pub const OrderByClause = parser.OrderByClause;
 pub const SortOrder = parser.SortOrder;
 pub const SelectExpr = parser.SelectExpr;
 pub const AggFunc = parser.AggFunc;
+pub const SetOp = parser.SetOp;
 pub const JoinClause = parser.JoinClause;
 pub const JoinType = parser.JoinType;
 pub const HavingClause = parser.HavingClause;
@@ -1170,17 +1171,10 @@ pub const Database = struct {
         return .ok;
     }
 
-    fn executeUnion(self: *Database, union_sel: Statement.UnionSelect) !ExecuteResult {
-        // Save and restore projected state
-        const saved_rows = self.projected_rows;
-        const saved_values = self.projected_values;
-        const saved_texts = self.projected_texts;
+    fn executeSetOperands(self: *Database, selects: []const []const u8, saved_rows: ?[]Row, saved_values: ?[][]Value, saved_texts: ?[][]const u8) !?std.ArrayList(std.ArrayList(Row)) {
+        var operand_results = std.ArrayList(std.ArrayList(Row)){};
 
-        var all_rows: std.ArrayList(Row) = .{};
-        defer all_rows.deinit(self.allocator);
-
-        // Execute each SELECT and collect results
-        for (union_sel.selects) |select_sql| {
+        for (selects) |select_sql| {
             self.projected_rows = null;
             self.projected_values = null;
             self.projected_texts = null;
@@ -1188,8 +1182,8 @@ pub const Database = struct {
             const result = try self.execute(select_sql);
             switch (result) {
                 .rows => |rows| {
+                    var operand_rows = std.ArrayList(Row){};
                     for (rows) |row| {
-                        // Deep copy row values
                         var new_values = try self.allocator.alloc(Value, row.values.len);
                         for (row.values, 0..) |val, vi| {
                             new_values[vi] = switch (val) {
@@ -1198,30 +1192,151 @@ pub const Database = struct {
                                 .null_val => .null_val,
                             };
                         }
-                        try all_rows.append(self.allocator, .{ .values = new_values });
+                        try operand_rows.append(self.allocator, .{ .values = new_values });
                     }
+                    try operand_results.append(self.allocator, operand_rows);
                 },
                 .err => |e| {
+                    _ = e;
                     self.freeProjected();
                     self.projected_rows = saved_rows;
                     self.projected_values = saved_values;
                     self.projected_texts = saved_texts;
-                    return .{ .err = e };
+                    // Clean up already collected results
+                    for (operand_results.items) |*op_rows| {
+                        for (op_rows.items) |r| self.freeRow(r);
+                        op_rows.deinit(self.allocator);
+                    }
+                    operand_results.deinit(self.allocator);
+                    return null;
                 },
-                .ok => {},
+                .ok => {
+                    try operand_results.append(self.allocator, std.ArrayList(Row){});
+                },
             }
 
             self.freeProjected();
         }
 
-        // Remove duplicates if UNION (not UNION ALL)
-        if (!union_sel.is_all) {
-            try self.removeDuplicateRows(&all_rows);
+        return operand_results;
+    }
+
+    fn executeUnion(self: *Database, union_sel: Statement.UnionSelect) !ExecuteResult {
+        const saved_rows = self.projected_rows;
+        const saved_values = self.projected_values;
+        const saved_texts = self.projected_texts;
+
+        const operand_results_opt = try self.executeSetOperands(union_sel.selects, saved_rows, saved_values, saved_texts);
+        if (operand_results_opt == null) return .{ .err = "set operation failed" };
+        var operand_results = operand_results_opt.?;
+        defer {
+            for (operand_results.items) |*op_rows| {
+                op_rows.deinit(self.allocator);
+            }
+            operand_results.deinit(self.allocator);
+        }
+
+        var all_rows: std.ArrayList(Row) = .{};
+        defer all_rows.deinit(self.allocator);
+
+        switch (union_sel.set_op) {
+            .union_all => {
+                // Collect all rows from all operands
+                for (operand_results.items) |*op_rows| {
+                    for (op_rows.items) |row| {
+                        try all_rows.append(self.allocator, row);
+                    }
+                }
+            },
+            .union_distinct => {
+                // Collect all rows, then remove duplicates
+                for (operand_results.items) |*op_rows| {
+                    for (op_rows.items) |row| {
+                        try all_rows.append(self.allocator, row);
+                    }
+                }
+                try self.removeDuplicateRows(&all_rows);
+            },
+            .intersect => {
+                // Return only rows present in ALL operands
+                if (operand_results.items.len >= 1) {
+                    // Start with first operand (deduplicated)
+                    for (operand_results.items[0].items) |row| {
+                        try all_rows.append(self.allocator, row);
+                    }
+                    try self.removeDuplicateRows(&all_rows);
+
+                    // Keep only rows that also appear in each subsequent operand
+                    for (operand_results.items[1..]) |*op_rows| {
+                        var write_idx: usize = 0;
+                        for (0..all_rows.items.len) |ri| {
+                            var found = false;
+                            for (op_rows.items) |other_row| {
+                                if (self.rowsEqualUnion(all_rows.items[ri], other_row)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (found) {
+                                all_rows.items[write_idx] = all_rows.items[ri];
+                                write_idx += 1;
+                            } else {
+                                self.freeRow(all_rows.items[ri]);
+                            }
+                        }
+                        all_rows.shrinkRetainingCapacity(write_idx);
+                    }
+
+                    // Free rows from subsequent operands (they were not moved into all_rows)
+                    for (operand_results.items[1..]) |*op_rows| {
+                        for (op_rows.items) |row| {
+                            self.freeRow(row);
+                        }
+                    }
+                }
+            },
+            .except => {
+                // Return rows from first operand not in subsequent operands
+                if (operand_results.items.len >= 1) {
+                    // Start with first operand (deduplicated)
+                    for (operand_results.items[0].items) |row| {
+                        try all_rows.append(self.allocator, row);
+                    }
+                    try self.removeDuplicateRows(&all_rows);
+
+                    // Remove rows that appear in any subsequent operand
+                    for (operand_results.items[1..]) |*op_rows| {
+                        var write_idx: usize = 0;
+                        for (0..all_rows.items.len) |ri| {
+                            var found = false;
+                            for (op_rows.items) |other_row| {
+                                if (self.rowsEqualUnion(all_rows.items[ri], other_row)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                all_rows.items[write_idx] = all_rows.items[ri];
+                                write_idx += 1;
+                            } else {
+                                self.freeRow(all_rows.items[ri]);
+                            }
+                        }
+                        all_rows.shrinkRetainingCapacity(write_idx);
+                    }
+
+                    // Free rows from subsequent operands
+                    for (operand_results.items[1..]) |*op_rows| {
+                        for (op_rows.items) |row| {
+                            self.freeRow(row);
+                        }
+                    }
+                }
+            },
         }
 
         // Apply ORDER BY if present
         if (union_sel.order_by) |order_by| {
-            // Simple string-based sort (for now)
             const sorted_rows = all_rows.items;
             std.mem.sortUnstable(Row, sorted_rows, order_by, rowComparator);
             if (order_by.order == .desc) {
@@ -1247,7 +1362,6 @@ pub const Database = struct {
         self.projected_values = null;
         self.projected_texts = null;
 
-        // Restore state (clear projection tracking since we're returning rows)
         return .{ .rows = self.projected_rows.? };
     }
 

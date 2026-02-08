@@ -128,6 +128,13 @@ pub const SelectExpr = union(enum) {
     expr: *const Expr,
 };
 
+pub const SetOp = enum {
+    union_all,
+    union_distinct,
+    intersect,
+    except,
+};
+
 pub const JoinType = enum {
     inner,
     left,
@@ -192,7 +199,7 @@ pub const Statement = union(enum) {
 
     pub const UnionSelect = struct {
         selects: []const []const u8, // raw SQL for each SELECT (to be parsed recursively)
-        is_all: bool, // true for UNION ALL, false for UNION (removes duplicates)
+        set_op: SetOp, // UNION ALL, UNION, INTERSECT, or EXCEPT
         order_by: ?OrderByClause,
         limit: ?i64,
         offset: ?i64,
@@ -572,8 +579,8 @@ pub const Parser = struct {
             offset = std.fmt.parseInt(i64, offset_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
         }
 
-        // Check for UNION before semicolon
-        if (self.peek().type == .kw_union) {
+        // Check for UNION/INTERSECT/EXCEPT before semicolon
+        if (self.peek().type == .kw_union or self.peek().type == .kw_intersect or self.peek().type == .kw_except) {
             // Extract raw SQL for first SELECT - from first SELECT keyword to current position
             var select_start: usize = 0;
             for (self.tokens, 0..) |token, i| {
@@ -583,9 +590,9 @@ pub const Parser = struct {
                 }
             }
 
-            // Reconstruct first SELECT SQL (from SELECT to current position, before UNION)
+            // Reconstruct first SELECT SQL (from SELECT to current position, before set op)
             const first_select_sql = try self.reconstructSQL(self.tokens[select_start..self.pos]);
-            return try self.parseUnion(first_select_sql);
+            return try self.parseSetOp(first_select_sql);
         }
 
         _ = try self.expect(.semicolon);
@@ -1217,29 +1224,46 @@ pub const Parser = struct {
         return Statement{ .rollback = {} };
     }
 
-    fn parseUnion(self: *Parser, first_select_sql: []const u8) ParseError!Statement {
+    fn isSetOpKeyword(tt: TokenType) bool {
+        return tt == .kw_union or tt == .kw_intersect or tt == .kw_except;
+    }
+
+    fn parseSetOp(self: *Parser, first_select_sql: []const u8) ParseError!Statement {
         // Already parsed first SELECT: SELECT ... (stored as raw SQL)
-        // Currently at: UNION [ALL] ...
+        // Currently at: UNION [ALL] | INTERSECT | EXCEPT ...
         var selects: std.ArrayList([]const u8) = .{};
         defer selects.deinit(self.allocator);
 
         // Add first SELECT
         selects.append(self.allocator, first_select_sql) catch return ParseError.OutOfMemory;
 
-        // Check for ALL in first UNION
-        _ = try self.expect(.kw_union);
-        var is_all = false;
-        if (self.peek().type == .kw_all) {
-            is_all = true;
-            _ = self.advance();
-        }
+        // Determine set operation type
+        const set_op: SetOp = switch (self.peek().type) {
+            .kw_union => blk: {
+                _ = self.advance();
+                if (self.peek().type == .kw_all) {
+                    _ = self.advance();
+                    break :blk .union_all;
+                }
+                break :blk .union_distinct;
+            },
+            .kw_intersect => blk: {
+                _ = self.advance();
+                break :blk .intersect;
+            },
+            .kw_except => blk: {
+                _ = self.advance();
+                break :blk .except;
+            },
+            else => return ParseError.UnexpectedToken,
+        };
 
         // Parse first subsequent SELECT
         _ = try self.expect(.kw_select);
         var select_start = self.pos - 1;
         while (self.peek().type != .semicolon and
                self.peek().type != .eof and
-               self.peek().type != .kw_union and
+               !isSetOpKeyword(self.peek().type) and
                self.peek().type != .kw_order and
                self.peek().type != .kw_limit and
                self.peek().type != .kw_offset) {
@@ -1249,11 +1273,11 @@ pub const Parser = struct {
         var select_sql = try self.reconstructSQL(select_tokens);
         selects.append(self.allocator, select_sql) catch return ParseError.OutOfMemory;
 
-        // Parse additional UNIONs
-        while (self.peek().type == .kw_union) {
-            _ = self.advance(); // consume UNION
+        // Parse additional set operations (same operator)
+        while (isSetOpKeyword(self.peek().type)) {
+            _ = self.advance(); // consume UNION/INTERSECT/EXCEPT
 
-            // Ignore ALL in subsequent UNIONs (only first UNION's ALL flag matters)
+            // Skip ALL keyword if present (only meaningful for UNION)
             if (self.peek().type == .kw_all) {
                 _ = self.advance();
             }
@@ -1261,24 +1285,23 @@ pub const Parser = struct {
             // Expect SELECT keyword
             _ = try self.expect(.kw_select);
 
-            // Extract from SELECT to UNION/ORDER/LIMIT/OFFSET/EOF/SEMICOLON
-            select_start = self.pos - 1; // Position of SELECT keyword
+            // Extract from SELECT to next set op/ORDER/LIMIT/OFFSET/EOF/SEMICOLON
+            select_start = self.pos - 1;
             while (self.peek().type != .semicolon and
                    self.peek().type != .eof and
-                   self.peek().type != .kw_union and
+                   !isSetOpKeyword(self.peek().type) and
                    self.peek().type != .kw_order and
                    self.peek().type != .kw_limit and
                    self.peek().type != .kw_offset) {
                 _ = self.advance();
             }
 
-            // Reconstruct raw SQL for this SELECT
             select_tokens = self.tokens[select_start..self.pos];
             select_sql = try self.reconstructSQL(select_tokens);
             selects.append(self.allocator, select_sql) catch return ParseError.OutOfMemory;
         }
 
-        // Parse optional ORDER BY / LIMIT / OFFSET after all UNIONs
+        // Parse optional ORDER BY / LIMIT / OFFSET
         const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
 
         var limit: ?i64 = null;
@@ -1302,7 +1325,7 @@ pub const Parser = struct {
         return Statement{
             .union_select = .{
                 .selects = selects.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
-                .is_all = is_all,
+                .set_op = set_op,
                 .order_by = order_by,
                 .limit = limit,
                 .offset = offset,
