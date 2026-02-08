@@ -176,12 +176,19 @@
 - [x] projected_textsによるメモリ追跡
 - Differential Test: **172/172 passing**
 
-### 次のステップ
+### Phase 6d-3: インメモリB+Tree実装（完了）
+- [x] Row構造体にrowid追加（デフォルト0で後方互換）
+- [x] Table.insertRowでrowid自動割当（next_rowid管理）
+- [x] B+TreeStorage実装（ORDER=4、リーフリンクリスト、マテリアライズキャッシュ）
+- [x] insert/delete/search/rangeSearch O(log N)操作
+- [x] scanMut write-back（ALTER TABLE ADD COLUMN対応）
+- [x] tables.get()→getPtr()修正（BTreeStorageキャッシュリーク防止）
+- [x] storage().append()全箇所にrowid付与（state/modify/select修正）
+- [x] rowid疑似カラム（SELECT rowid, WHERE rowid=N）
+- [x] TableSnapshotにnext_rowid保存・復元
+- Differential Test: **173/173 passing**
 
-### Phase 6d-3: インメモリB-Tree実装（予定）
-- rowid（オートインクリメント）対応
-- B+TreeStorageバックエンド実装
-- 範囲検索機能
+### 次のステップ
 
 ### Phase 6e: ファイル永続化
 - ページベースのファイルI/O
