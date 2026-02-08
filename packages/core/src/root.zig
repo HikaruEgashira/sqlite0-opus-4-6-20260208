@@ -1170,6 +1170,157 @@ pub const Database = struct {
         return .ok;
     }
 
+    fn executeUnion(self: *Database, union_sel: Statement.UnionSelect) !ExecuteResult {
+        // Save and restore projected state
+        const saved_rows = self.projected_rows;
+        const saved_values = self.projected_values;
+        const saved_texts = self.projected_texts;
+
+        var all_rows: std.ArrayList(Row) = .{};
+        defer all_rows.deinit(self.allocator);
+
+        // Execute each SELECT and collect results
+        for (union_sel.selects) |select_sql| {
+            self.projected_rows = null;
+            self.projected_values = null;
+            self.projected_texts = null;
+
+            const result = try self.execute(select_sql);
+            switch (result) {
+                .rows => |rows| {
+                    for (rows) |row| {
+                        // Deep copy row values
+                        var new_values = try self.allocator.alloc(Value, row.values.len);
+                        for (row.values, 0..) |val, vi| {
+                            new_values[vi] = switch (val) {
+                                .text => |t| .{ .text = try dupeStr(self.allocator, t) },
+                                .integer => |n| .{ .integer = n },
+                                .null_val => .null_val,
+                            };
+                        }
+                        try all_rows.append(self.allocator, .{ .values = new_values });
+                    }
+                },
+                .err => |e| {
+                    self.freeProjected();
+                    self.projected_rows = saved_rows;
+                    self.projected_values = saved_values;
+                    self.projected_texts = saved_texts;
+                    return .{ .err = e };
+                },
+                .ok => {},
+            }
+
+            self.freeProjected();
+        }
+
+        // Remove duplicates if UNION (not UNION ALL)
+        if (!union_sel.is_all) {
+            try self.removeDuplicateRows(&all_rows);
+        }
+
+        // Apply ORDER BY if present
+        if (union_sel.order_by) |order_by| {
+            // Simple string-based sort (for now)
+            const sorted_rows = all_rows.items;
+            std.mem.sortUnstable(Row, sorted_rows, order_by, rowComparator);
+            if (order_by.order == .desc) {
+                std.mem.reverse(Row, sorted_rows);
+            }
+        }
+
+        // Apply LIMIT/OFFSET if present
+        var final_rows = all_rows.items;
+        if (union_sel.offset) |offset| {
+            if (offset > 0 and offset < final_rows.len) {
+                final_rows = final_rows[@intCast(offset)..];
+            }
+        }
+        if (union_sel.limit) |limit| {
+            if (limit > 0 and limit < final_rows.len) {
+                final_rows = final_rows[0..@intCast(limit)];
+            }
+        }
+
+        // Store results
+        self.projected_rows = try self.allocator.dupe(Row, final_rows);
+        self.projected_values = null;
+        self.projected_texts = null;
+
+        // Restore state (clear projection tracking since we're returning rows)
+        return .{ .rows = self.projected_rows.? };
+    }
+
+    fn removeDuplicateRows(self: *Database, rows: *std.ArrayList(Row)) !void {
+        var i: usize = 0;
+        while (i < rows.items.len) {
+            var j = i + 1;
+            while (j < rows.items.len) {
+                if (self.rowsEqualUnion(rows.items[i], rows.items[j])) {
+                    // Free duplicate and remove
+                    self.freeRow(rows.items[j]);
+                    _ = rows.orderedRemove(j);
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn rowsEqualUnion(self: *Database, row1: Row, row2: Row) bool {
+        if (row1.values.len != row2.values.len) return false;
+        for (row1.values, row2.values) |v1, v2| {
+            if (!self.valuesEqualUnion(v1, v2)) return false;
+        }
+        return true;
+    }
+
+    fn valuesEqualUnion(self: *Database, v1: Value, v2: Value) bool {
+        _ = self;
+        return switch (v1) {
+            .integer => |n1| switch (v2) {
+                .integer => |n2| n1 == n2,
+                else => false,
+            },
+            .text => |t1| switch (v2) {
+                .text => |t2| std.mem.eql(u8, t1, t2),
+                else => false,
+            },
+            .null_val => switch (v2) {
+                .null_val => true,
+                else => false,
+            },
+        };
+    }
+
+    fn rowComparator(_: OrderByClause, row1: Row, row2: Row) bool {
+        // Placeholder: compare first column for now
+        if (row1.values.len == 0 or row2.values.len == 0) return false;
+        const v1 = row1.values[0];
+        const v2 = row2.values[0];
+        return switch (v1) {
+            .integer => |n1| switch (v2) {
+                .integer => |n2| n1 < n2,
+                else => false,
+            },
+            .text => |t1| switch (v2) {
+                .text => |t2| std.mem.order(u8, t1, t2) == .lt,
+                else => false,
+            },
+            .null_val => false,
+        };
+    }
+
+    fn freeRow(self: *Database, row: Row) void {
+        for (row.values) |val| {
+            if (val == .text) {
+                self.allocator.free(val.text);
+            }
+        }
+        self.allocator.free(row.values);
+    }
+
     fn matchesConditionWithSubquery(self: *Database, table: *const Table, row: Row, column: []const u8, op: CompOp, value: []const u8, subquery_sql: ?[]const u8) !bool {
         if (subquery_sql) |sq| {
             const sub_values = try self.executeSubquery(sq);
@@ -1431,6 +1582,15 @@ pub const Database = struct {
                         return .{ .err = "table not found" };
                     },
                 }
+            },
+            .union_select => |union_sel| {
+                defer {
+                    for (union_sel.selects) |select_sql| {
+                        self.allocator.free(@constCast(select_sql));
+                    }
+                    self.allocator.free(union_sel.selects);
+                }
+                return self.executeUnion(union_sel);
             },
         }
     }

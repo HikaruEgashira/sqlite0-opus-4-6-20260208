@@ -154,6 +154,7 @@ pub const Statement = union(enum) {
     create_index: CreateIndex,
     insert: Insert,
     select_stmt: Select,
+    union_select: UnionSelect,
     delete: Delete,
     update: Update,
     drop_table: DropTable,
@@ -184,6 +185,14 @@ pub const Statement = union(enum) {
         where_expr: ?*const Expr = null, // Expr-based WHERE (Phase 6c)
         group_by: ?[]const u8, // column name
         having: ?HavingClause,
+        order_by: ?OrderByClause,
+        limit: ?i64,
+        offset: ?i64,
+    };
+
+    pub const UnionSelect = struct {
+        selects: []const []const u8, // raw SQL for each SELECT (to be parsed recursively)
+        is_all: bool, // true for UNION ALL, false for UNION (removes duplicates)
         order_by: ?OrderByClause,
         limit: ?i64,
         offset: ?i64,
@@ -561,6 +570,22 @@ pub const Parser = struct {
             const offset_tok = self.advance();
             if (offset_tok.type != .integer_literal) return ParseError.UnexpectedToken;
             offset = std.fmt.parseInt(i64, offset_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+        }
+
+        // Check for UNION before semicolon
+        if (self.peek().type == .kw_union) {
+            // Extract raw SQL for first SELECT - from first SELECT keyword to current position
+            var select_start: usize = 0;
+            for (self.tokens, 0..) |token, i| {
+                if (token.type == .kw_select) {
+                    select_start = i;
+                    break;
+                }
+            }
+
+            // Reconstruct first SELECT SQL (from SELECT to current position, before UNION)
+            const first_select_sql = try self.reconstructSQL(self.tokens[select_start..self.pos]);
+            return try self.parseUnion(first_select_sql);
         }
 
         _ = try self.expect(.semicolon);
@@ -1191,6 +1216,115 @@ pub const Parser = struct {
         _ = try self.expect(.semicolon);
         return Statement{ .rollback = {} };
     }
+
+    fn parseUnion(self: *Parser, first_select_sql: []const u8) ParseError!Statement {
+        // Already parsed first SELECT: SELECT ... (stored as raw SQL)
+        // Currently at: UNION [ALL] ...
+        var selects: std.ArrayList([]const u8) = .{};
+        defer selects.deinit(self.allocator);
+
+        // Add first SELECT
+        selects.append(self.allocator, first_select_sql) catch return ParseError.OutOfMemory;
+
+        // Check for ALL in first UNION
+        _ = try self.expect(.kw_union);
+        var is_all = false;
+        if (self.peek().type == .kw_all) {
+            is_all = true;
+            _ = self.advance();
+        }
+
+        // Parse first subsequent SELECT
+        _ = try self.expect(.kw_select);
+        var select_start = self.pos - 1;
+        while (self.peek().type != .semicolon and
+               self.peek().type != .eof and
+               self.peek().type != .kw_union and
+               self.peek().type != .kw_order and
+               self.peek().type != .kw_limit and
+               self.peek().type != .kw_offset) {
+            _ = self.advance();
+        }
+        var select_tokens = self.tokens[select_start..self.pos];
+        var select_sql = try self.reconstructSQL(select_tokens);
+        selects.append(self.allocator, select_sql) catch return ParseError.OutOfMemory;
+
+        // Parse additional UNIONs
+        while (self.peek().type == .kw_union) {
+            _ = self.advance(); // consume UNION
+
+            // Ignore ALL in subsequent UNIONs (only first UNION's ALL flag matters)
+            if (self.peek().type == .kw_all) {
+                _ = self.advance();
+            }
+
+            // Expect SELECT keyword
+            _ = try self.expect(.kw_select);
+
+            // Extract from SELECT to UNION/ORDER/LIMIT/OFFSET/EOF/SEMICOLON
+            select_start = self.pos - 1; // Position of SELECT keyword
+            while (self.peek().type != .semicolon and
+                   self.peek().type != .eof and
+                   self.peek().type != .kw_union and
+                   self.peek().type != .kw_order and
+                   self.peek().type != .kw_limit and
+                   self.peek().type != .kw_offset) {
+                _ = self.advance();
+            }
+
+            // Reconstruct raw SQL for this SELECT
+            select_tokens = self.tokens[select_start..self.pos];
+            select_sql = try self.reconstructSQL(select_tokens);
+            selects.append(self.allocator, select_sql) catch return ParseError.OutOfMemory;
+        }
+
+        // Parse optional ORDER BY / LIMIT / OFFSET after all UNIONs
+        const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
+
+        var limit: ?i64 = null;
+        if (self.peek().type == .kw_limit) {
+            _ = self.advance();
+            const limit_tok = self.advance();
+            if (limit_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+            limit = std.fmt.parseInt(i64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+        }
+
+        var offset: ?i64 = null;
+        if (self.peek().type == .kw_offset) {
+            _ = self.advance();
+            const offset_tok = self.advance();
+            if (offset_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+            offset = std.fmt.parseInt(i64, offset_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+        }
+
+        _ = try self.expect(.semicolon);
+
+        return Statement{
+            .union_select = .{
+                .selects = selects.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .is_all = is_all,
+                .order_by = order_by,
+                .limit = limit,
+                .offset = offset,
+            },
+        };
+    }
+
+    fn reconstructSQL(self: *Parser, tokens: []const Token) ParseError![]const u8 {
+        // Reconstruct SQL from tokens by concatenating lexemes with spaces
+        var result: std.ArrayList(u8) = .{};
+        defer result.deinit(self.allocator);
+
+        for (tokens, 0..) |token, i| {
+            if (i > 0) {
+                result.append(self.allocator, ' ') catch return ParseError.OutOfMemory;
+            }
+            result.appendSlice(self.allocator, token.lexeme) catch return ParseError.OutOfMemory;
+        }
+
+        return result.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+    }
+
 };
 
 test "parse CREATE TABLE" {
