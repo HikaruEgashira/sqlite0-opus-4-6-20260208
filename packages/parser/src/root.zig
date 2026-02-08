@@ -886,6 +886,21 @@ pub const Parser = struct {
     fn parsePrimary(self: *Parser) ParseError!*const Expr {
         const tok = self.peek();
 
+        // Unary minus
+        if (tok.type == .minus) {
+            _ = self.advance();
+            // Check for integer literal directly for efficiency
+            if (self.peek().type == .integer_literal) {
+                const num_tok = self.advance();
+                const num = std.fmt.parseInt(i64, num_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+                return self.allocExpr(.{ .integer_literal = -num });
+            }
+            const operand = try self.parsePrimary();
+            // Desugar -x to 0 - x
+            const zero = try self.allocExpr(.{ .integer_literal = 0 });
+            return self.allocExpr(.{ .binary_op = .{ .op = .sub, .left = zero, .right = operand } });
+        }
+
         // CASE WHEN expression
         if (tok.type == .kw_case) {
             _ = self.advance();
