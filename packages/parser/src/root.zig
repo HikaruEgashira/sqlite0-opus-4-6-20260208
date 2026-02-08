@@ -273,6 +273,23 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         columns: []const ColumnDef,
         if_not_exists: bool = false,
+        as_select_sql: ?[]const u8 = null, // CREATE TABLE t AS SELECT ...
+    };
+
+    pub const OnConflictAction = enum {
+        do_nothing,
+        do_update,
+    };
+
+    pub const OnConflictUpdate = struct {
+        column: []const u8,
+        value_sql: []const u8, // raw value text (could be "excluded.col" or literal)
+    };
+
+    pub const OnConflict = struct {
+        conflict_columns: []const []const u8, // columns in ON CONFLICT(col1, col2)
+        action: OnConflictAction,
+        updates: []const OnConflictUpdate, // SET assignments for DO UPDATE
     };
 
     pub const Insert = struct {
@@ -283,6 +300,7 @@ pub const Statement = union(enum) {
         replace_mode: bool = false, // REPLACE INTO / INSERT OR REPLACE behavior
         ignore_mode: bool = false, // INSERT OR IGNORE behavior
         column_names: []const []const u8 = &.{}, // explicit column list (empty = all)
+        on_conflict: ?OnConflict = null, // ON CONFLICT clause (UPSERT)
     };
 
     pub const Select = struct {
@@ -411,6 +429,10 @@ pub const Parser = struct {
     }
 
     /// Accept identifier or keyword as an alias name (keywords can be used as aliases)
+    fn isIdentEql(tok: Token, keyword: []const u8) bool {
+        return tok.type == .identifier and std.ascii.eqlIgnoreCase(tok.lexeme, keyword);
+    }
+
     fn expectAlias(self: *Parser) ParseError!Token {
         const tok = self.advance();
         if (tok.type == .identifier) return tok;
@@ -432,6 +454,27 @@ pub const Parser = struct {
             _ = try self.expect(.kw_not);
             _ = try self.expect(.kw_exists);
             if_not_exists = true;
+        }
+        // Check for CREATE TABLE t AS SELECT ...
+        const name_tok = self.peek();
+        if (name_tok.type == .identifier) {
+            // Look ahead: is it "name AS SELECT" ?
+            if (self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .kw_as and
+                self.pos + 2 < self.tokens.len and self.tokens[self.pos + 2].type == .kw_select)
+            {
+                _ = self.advance(); // consume table name
+                _ = self.advance(); // consume AS
+                // Extract SELECT SQL until semicolon
+                const select_sql = try self.extractInsertSelectSQL();
+                return Statement{
+                    .create_table = .{
+                        .table_name = name_tok.lexeme,
+                        .columns = &.{},
+                        .if_not_exists = if_not_exists,
+                        .as_select_sql = select_sql,
+                    },
+                };
+            }
         }
         return self.parseCreateTableBody(if_not_exists);
     }
@@ -614,6 +657,76 @@ pub const Parser = struct {
             extra_rows.append(self.allocator, row) catch return ParseError.OutOfMemory;
         }
 
+        // Parse optional ON CONFLICT clause (contextual keywords)
+        var on_conflict: ?Statement.OnConflict = null;
+        if (self.peek().type == .kw_on and self.pos + 1 < self.tokens.len and isIdentEql(self.tokens[self.pos + 1], "CONFLICT")) {
+            _ = self.advance(); // consume ON
+            _ = self.advance(); // consume CONFLICT
+            // Parse optional conflict target: (col1, col2, ...)
+            var conflict_cols: std.ArrayList([]const u8) = .{};
+            if (self.peek().type == .lparen) {
+                _ = self.advance(); // consume '('
+                while (true) {
+                    const col_tok = try self.expectAlias();
+                    conflict_cols.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                    if (self.peek().type == .comma) {
+                        _ = self.advance();
+                    } else break;
+                }
+                _ = try self.expect(.rparen);
+            }
+            // Expect DO (contextual)
+            if (!isIdentEql(self.peek(), "DO")) return ParseError.UnexpectedToken;
+            _ = self.advance(); // consume DO
+            if (isIdentEql(self.peek(), "NOTHING")) {
+                _ = self.advance(); // consume NOTHING
+                on_conflict = .{
+                    .conflict_columns = conflict_cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .action = .do_nothing,
+                    .updates = &.{},
+                };
+            } else if (self.peek().type == .kw_update) {
+                _ = self.advance(); // consume UPDATE
+                _ = try self.expect(.kw_set);
+                // Parse SET col = val, col2 = val2, ...
+                var updates: std.ArrayList(Statement.OnConflictUpdate) = .{};
+                while (true) {
+                    const upd_col = try self.expectAlias();
+                    _ = try self.expect(.equals);
+                    // Capture the value token (could be "excluded.col" or literal)
+                    const val_tok = self.peek();
+                    if (isIdentEql(val_tok, "EXCLUDED")) {
+                        _ = self.advance(); // consume EXCLUDED
+                        _ = try self.expect(.dot);
+                        const ref_col = try self.expectAlias();
+                        // Store as "excluded.colname"
+                        const excl_ref = std.fmt.allocPrint(self.allocator, "excluded.{s}", .{ref_col.lexeme}) catch return ParseError.OutOfMemory;
+                        updates.append(self.allocator, .{
+                            .column = upd_col.lexeme,
+                            .value_sql = excl_ref,
+                        }) catch return ParseError.OutOfMemory;
+                    } else {
+                        // Simple value (literal, column ref, etc.)
+                        const vt = self.advance();
+                        updates.append(self.allocator, .{
+                            .column = upd_col.lexeme,
+                            .value_sql = vt.lexeme,
+                        }) catch return ParseError.OutOfMemory;
+                    }
+                    if (self.peek().type == .comma) {
+                        _ = self.advance();
+                    } else break;
+                }
+                on_conflict = .{
+                    .conflict_columns = conflict_cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    .action = .do_update,
+                    .updates = updates.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                };
+            } else {
+                return ParseError.UnexpectedToken;
+            }
+        }
+
         _ = try self.expect(.semicolon);
 
         return Statement{
@@ -624,6 +737,7 @@ pub const Parser = struct {
                 .replace_mode = replace_mode,
                 .ignore_mode = ignore_mode,
                 .column_names = col_names.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .on_conflict = on_conflict,
             },
         };
     }

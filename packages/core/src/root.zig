@@ -1419,6 +1419,103 @@ pub const Database = struct {
         table.insertRow(raw_values) catch {};
     }
 
+    /// Execute UPSERT: INSERT ... ON CONFLICT DO NOTHING/UPDATE
+    fn executeUpsertRow(self: *Database, table: *Table, raw_values: []const []const u8, on_conflict: Statement.OnConflict) !void {
+        // Find conflict column indices (or use primary key)
+        var conflict_indices: std.ArrayList(usize) = .{};
+        defer conflict_indices.deinit(self.allocator);
+        if (on_conflict.conflict_columns.len > 0) {
+            for (on_conflict.conflict_columns) |cc| {
+                for (table.columns, 0..) |col, i| {
+                    if (std.ascii.eqlIgnoreCase(cc, col.name)) {
+                        try conflict_indices.append(self.allocator, i);
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Default: use primary key column
+            for (table.columns, 0..) |col, i| {
+                if (col.is_primary_key) {
+                    try conflict_indices.append(self.allocator, i);
+                    break;
+                }
+            }
+        }
+        // Parse new values for conflict comparison (not heap-allocated, no free needed)
+        var new_vals = try self.allocator.alloc(Value, raw_values.len);
+        defer self.allocator.free(new_vals);
+        for (raw_values, 0..) |rv, i| {
+            new_vals[i] = if (std.mem.eql(u8, rv, "NULL")) .null_val else Table.parseRawValue(rv);
+        }
+        // Find conflicting row
+        var conflict_row_idx: ?usize = null;
+        if (conflict_indices.items.len > 0) {
+            const rows = table.storage().scan();
+            for (rows, 0..) |row, ri| {
+                var all_match = true;
+                for (conflict_indices.items) |ci| {
+                    if (ci < row.values.len and ci < new_vals.len) {
+                        if (!self.valuesEqualUnion(row.values[ci], new_vals[ci])) {
+                            all_match = false;
+                            break;
+                        }
+                    } else {
+                        all_match = false;
+                        break;
+                    }
+                }
+                if (all_match) {
+                    conflict_row_idx = ri;
+                    break;
+                }
+            }
+        }
+        if (conflict_row_idx) |cri| {
+            // Conflict found
+            switch (on_conflict.action) {
+                .do_nothing => {}, // Skip this row
+                .do_update => {
+                    // Apply SET assignments
+                    const rows = table.storage().scan();
+                    var row = rows[cri];
+                    for (on_conflict.updates) |upd| {
+                        // Find target column index
+                        var target_idx: ?usize = null;
+                        for (table.columns, 0..) |col, i| {
+                            if (std.ascii.eqlIgnoreCase(upd.column, col.name)) {
+                                target_idx = i;
+                                break;
+                            }
+                        }
+                        if (target_idx) |ti| {
+                            // Resolve value: "excluded.col" means the new value
+                            const new_val = if (std.mem.startsWith(u8, upd.value_sql, "excluded.")) blk: {
+                                const excl_col = upd.value_sql["excluded.".len..];
+                                for (table.columns, 0..) |col, i| {
+                                    if (std.ascii.eqlIgnoreCase(excl_col, col.name)) {
+                                        if (i < new_vals.len) break :blk new_vals[i];
+                                    }
+                                }
+                                break :blk Value.null_val;
+                            } else Table.parseRawValue(upd.value_sql);
+                            // Free old text value
+                            if (row.values[ti] == .text) self.allocator.free(row.values[ti].text);
+                            // Set new value (deep copy text)
+                            row.values[ti] = if (new_val == .text)
+                                .{ .text = dupeStr(self.allocator, new_val.text) catch "" }
+                            else
+                                new_val;
+                        }
+                    }
+                },
+            }
+        } else {
+            // No conflict: insert normally
+            try table.insertRow(raw_values);
+        }
+    }
+
     /// Convert Value to boolean (SQLite3 semantics: 0 and NULL are false)
     fn valueToBool(_: *Database, val: Value) bool {
         return switch (val) {
@@ -3171,6 +3268,16 @@ pub const Database = struct {
                     }
                     self.allocator.free(ins.extra_rows);
                 }
+                defer if (ins.on_conflict) |oc| {
+                    self.allocator.free(oc.conflict_columns);
+                    for (oc.updates) |upd| {
+                        // Free allocated "excluded.xxx" strings
+                        if (std.mem.startsWith(u8, upd.value_sql, "excluded.")) {
+                            self.allocator.free(upd.value_sql);
+                        }
+                    }
+                    self.allocator.free(oc.updates);
+                };
                 if (self.tables.getPtr(ins.table_name)) |table| {
                     if (ins.select_sql) |select_sql| {
                         return self.executeInsertSelect(table, select_sql);
@@ -3185,7 +3292,9 @@ pub const Database = struct {
                     if (!try self.validateCheckConstraints(table, values)) {
                         return .{ .err = "CHECK constraint failed" };
                     }
-                    if (ins.replace_mode) {
+                    if (ins.on_conflict) |oc| {
+                        try self.executeUpsertRow(table, values, oc);
+                    } else if (ins.replace_mode) {
                         self.replaceRow(table, values);
                     } else if (ins.ignore_mode) {
                         if (!self.hasPkConflict(table, values)) {
@@ -3203,7 +3312,9 @@ pub const Database = struct {
                         if (!try self.validateCheckConstraints(table, expanded)) {
                             return .{ .err = "CHECK constraint failed" };
                         }
-                        if (ins.replace_mode) {
+                        if (ins.on_conflict) |oc| {
+                            try self.executeUpsertRow(table, expanded, oc);
+                        } else if (ins.replace_mode) {
                             self.replaceRow(table, expanded);
                         } else if (ins.ignore_mode) {
                             if (!self.hasPkConflict(table, expanded)) {
