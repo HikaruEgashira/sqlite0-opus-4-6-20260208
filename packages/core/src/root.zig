@@ -1051,10 +1051,29 @@ pub const Database = struct {
             .sum => {
                 var total: i64 = 0;
                 var has_value = false;
-                for (rows) |row| {
-                    if (row.values[col_idx] == .integer) {
-                        total += row.values[col_idx].integer;
-                        has_value = true;
+                if (is_distinct) {
+                    var seen: std.ArrayList(i64) = .{};
+                    defer seen.deinit(self.allocator);
+                    for (rows) |row| {
+                        if (row.values[col_idx] == .integer) {
+                            const v = row.values[col_idx].integer;
+                            var found = false;
+                            for (seen.items) |s| {
+                                if (s == v) { found = true; break; }
+                            }
+                            if (!found) {
+                                seen.append(self.allocator, v) catch {};
+                                total += v;
+                                has_value = true;
+                            }
+                        }
+                    }
+                } else {
+                    for (rows) |row| {
+                        if (row.values[col_idx] == .integer) {
+                            total += row.values[col_idx].integer;
+                            has_value = true;
+                        }
                     }
                 }
                 if (!has_value) return .null_val;
@@ -1063,10 +1082,29 @@ pub const Database = struct {
             .avg => {
                 var total: f64 = 0;
                 var cnt: usize = 0;
-                for (rows) |row| {
-                    if (row.values[col_idx] == .integer) {
-                        total += @floatFromInt(row.values[col_idx].integer);
-                        cnt += 1;
+                if (is_distinct) {
+                    var seen: std.ArrayList(i64) = .{};
+                    defer seen.deinit(self.allocator);
+                    for (rows) |row| {
+                        if (row.values[col_idx] == .integer) {
+                            const v = row.values[col_idx].integer;
+                            var found = false;
+                            for (seen.items) |s| {
+                                if (s == v) { found = true; break; }
+                            }
+                            if (!found) {
+                                seen.append(self.allocator, v) catch {};
+                                total += @floatFromInt(v);
+                                cnt += 1;
+                            }
+                        }
+                    }
+                } else {
+                    for (rows) |row| {
+                        if (row.values[col_idx] == .integer) {
+                            total += @floatFromInt(row.values[col_idx].integer);
+                            cnt += 1;
+                        }
                     }
                 }
                 if (cnt == 0) return .null_val;
@@ -1116,19 +1154,35 @@ pub const Database = struct {
             },
             .group_concat => {
                 var result: std.ArrayList(u8) = .{};
+                var seen_texts: std.ArrayList([]const u8) = .{};
+                defer seen_texts.deinit(self.allocator);
                 var first = true;
                 for (rows) |row| {
                     if (row.values[col_idx] == .null_val) continue;
+                    const text = self.valueToText(row.values[col_idx]);
+                    if (is_distinct) {
+                        var found = false;
+                        for (seen_texts.items) |s| {
+                            if (std.mem.eql(u8, s, text)) { found = true; break; }
+                        }
+                        if (found) {
+                            self.allocator.free(text);
+                            continue;
+                        }
+                        seen_texts.append(self.allocator, text) catch {};
+                    }
                     if (!first) {
                         result.appendSlice(self.allocator, separator) catch return .null_val;
                     }
-                    const text = self.valueToText(row.values[col_idx]);
                     result.appendSlice(self.allocator, text) catch {
                         self.allocator.free(text);
                         return .null_val;
                     };
-                    self.allocator.free(text);
+                    if (!is_distinct) self.allocator.free(text);
                     first = false;
+                }
+                if (is_distinct) {
+                    for (seen_texts.items) |s| self.allocator.free(s);
                 }
                 if (first) return .null_val; // all NULL
                 return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };

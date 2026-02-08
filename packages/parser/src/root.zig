@@ -1353,6 +1353,8 @@ pub const Parser = struct {
         if (tok.type == .identifier and std.ascii.eqlIgnoreCase(tok.lexeme, "GROUP_CONCAT") and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
             _ = self.advance(); // consume GROUP_CONCAT
             _ = self.advance(); // consume '('
+            const gc_distinct = self.peek().type == .kw_distinct;
+            if (gc_distinct) _ = self.advance();
             const arg_expr = try self.parseExpr();
             var separator: []const u8 = ",";
             if (self.peek().type == .comma) {
@@ -1363,7 +1365,7 @@ pub const Parser = struct {
                 }
             }
             _ = try self.expect(.rparen);
-            return self.allocExpr(.{ .aggregate = .{ .func = .group_concat, .arg = arg_expr, .separator = separator } });
+            return self.allocExpr(.{ .aggregate = .{ .func = .group_concat, .arg = arg_expr, .separator = separator, .distinct = gc_distinct } });
         }
 
         // CAST(expr AS type) expression
