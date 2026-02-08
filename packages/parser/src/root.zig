@@ -255,7 +255,7 @@ pub const Statement = union(enum) {
         result_exprs: []const *const Expr, // parsed expression ASTs for each SELECT item
         aliases: []const ?[]const u8, // column aliases (null if no alias)
         distinct: bool,
-        join: ?JoinClause,
+        joins: []const JoinClause = &.{},
         where: ?WhereClause,
         where_expr: ?*const Expr = null, // Expr-based WHERE (Phase 6c)
         group_by: ?[]const []const u8, // column names (multiple GROUP BY columns)
@@ -701,7 +701,7 @@ pub const Parser = struct {
                     .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                     .aliases = aliases.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                     .distinct = distinct,
-                    .join = null,
+                    .joins = &.{},
                     .where = null,
                     .where_expr = null,
                     .group_by = null,
@@ -713,12 +713,14 @@ pub const Parser = struct {
             };
         }
 
-        // Parse optional JOIN (including comma syntax: FROM t1, t2 = CROSS JOIN)
-        var join: ?JoinClause = null;
-        if (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join or self.peek().type == .kw_cross) {
-            join = try self.parseJoinClause();
-        } else if (self.peek().type == .comma) {
-            // FROM t1, t2 syntax = implicit CROSS JOIN
+        // Parse optional JOINs (including comma syntax: FROM t1, t2 = CROSS JOIN)
+        var joins: std.ArrayList(JoinClause) = .{};
+        while (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join or self.peek().type == .kw_cross) {
+            const jc = try self.parseJoinClause();
+            joins.append(self.allocator, jc) catch return ParseError.OutOfMemory;
+        }
+        // Handle comma syntax: FROM t1, t2
+        if (joins.items.len == 0 and self.peek().type == .comma) {
             _ = self.advance(); // consume comma
             const join_table_tok = try self.expect(.identifier);
             var comma_alias: ?[]const u8 = null;
@@ -729,7 +731,7 @@ pub const Parser = struct {
             } else if (self.peek().type == .identifier) {
                 comma_alias = self.advance().lexeme;
             }
-            join = .{
+            joins.append(self.allocator, .{
                 .join_type = .cross,
                 .table_name = join_table_tok.lexeme,
                 .table_alias = comma_alias,
@@ -737,8 +739,9 @@ pub const Parser = struct {
                 .left_column = "",
                 .right_table = "",
                 .right_column = "",
-            };
+            }) catch return ParseError.OutOfMemory;
         }
+        const joins_slice = joins.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
 
         // Parse WHERE clause: always use Expr-based parsing
         const where: ?WhereClause = null;
@@ -842,7 +845,7 @@ pub const Parser = struct {
                 .result_exprs = result_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .aliases = aliases.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .distinct = distinct,
-                .join = join,
+                .joins = joins_slice,
                 .where = where,
                 .where_expr = where_expr,
                 .group_by = group_by,

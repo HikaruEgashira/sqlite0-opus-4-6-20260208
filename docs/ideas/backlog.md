@@ -44,6 +44,11 @@
 - ~~HEX / UNICODE / CHAR / ZEROBLOB / PRINTF関数~~ ✓
 - ~~UPDATE SET col = expr（式による更新）~~ ✓
 - ~~複数ORDER BYカラム~~ ✓
+- ~~COUNT(DISTINCT col)~~ ✓
+- ~~IN (val1, val2, ...) 値リスト~~ ✓
+- ~~ORDER BY式サポート~~ ✓
+- ~~テーブルエイリアス~~ ✓
+- ~~CROSS JOIN / カンマ区切りFROM~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

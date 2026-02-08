@@ -31,6 +31,15 @@
 - [x] UPDATE SET col = expr（式による更新）
 - [x] Differential Test: **68/68 passing**
 
+### Phase 6d-6: SQL機能充実（完了）
+- [x] COUNT(DISTINCT col)
+- [x] HAVING式ベースフィルター
+- [x] IN (val1, val2, ...) 値リスト
+- [x] ORDER BY式サポート（ABS(val), val+1など）
+- [x] テーブルエイリアス（FROM t1 AS a, JOIN t2 AS b）
+- [x] CROSS JOIN / カンマ区切りFROM
+- [x] Differential Test: **76/76 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）
