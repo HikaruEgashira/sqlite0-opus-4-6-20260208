@@ -4740,13 +4740,20 @@ pub const Database = struct {
                 return self.executeWithCTE(wc);
             },
             .insert => |ins| {
-                defer if (ins.select_sql == null) self.allocator.free(ins.values);
+                defer if (ins.select_sql == null and ins.value_exprs.len == 0) self.allocator.free(ins.values);
                 defer if (ins.select_sql) |s| self.allocator.free(@constCast(s));
                 defer {
                     for (ins.extra_rows) |row_values| {
                         self.allocator.free(row_values);
                     }
                     self.allocator.free(ins.extra_rows);
+                }
+                defer {
+                    for (ins.value_exprs) |expr_row| {
+                        for (expr_row) |e| self.freeExprDeep(e);
+                        self.allocator.free(expr_row);
+                    }
+                    if (ins.value_exprs.len > 0) self.allocator.free(ins.value_exprs);
                 }
                 defer if (ins.on_conflict) |oc| {
                     self.allocator.free(oc.conflict_columns);
@@ -4778,6 +4785,71 @@ pub const Database = struct {
                         }
                         return .ok;
                     }
+
+                    // Expression-based VALUES: evaluate each row's expressions
+                    if (ins.value_exprs.len > 0) {
+                        var dummy_table = Table.init(self.allocator, "", &.{});
+                        const dummy_row = Row{ .values = &.{} };
+                        for (ins.value_exprs) |expr_row| {
+                            var str_values = try self.allocator.alloc([]const u8, expr_row.len);
+                            defer self.allocator.free(str_values);
+                            var alloc_strs: std.ArrayList([]const u8) = .{};
+                            defer {
+                                for (alloc_strs.items) |s| self.allocator.free(s);
+                                alloc_strs.deinit(self.allocator);
+                            }
+                            for (expr_row, 0..) |expr, i| {
+                                const val = try self.evalExpr(expr, &dummy_table, dummy_row);
+                                switch (val) {
+                                    .integer => |n| {
+                                        const s = try std.fmt.allocPrint(self.allocator, "{d}", .{n});
+                                        str_values[i] = s;
+                                        alloc_strs.append(self.allocator, s) catch {};
+                                    },
+                                    .text => |t| {
+                                        // Wrap text in quotes for insertRow to recognize as text
+                                        const s = try std.fmt.allocPrint(self.allocator, "'{s}'", .{t});
+                                        self.allocator.free(t);
+                                        str_values[i] = s;
+                                        alloc_strs.append(self.allocator, s) catch {};
+                                    },
+                                    .null_val => {
+                                        str_values[i] = "NULL";
+                                    },
+                                }
+                            }
+                            // Expand partial column lists with default values
+                            const row_values = if (ins.column_names.len > 0)
+                                self.expandInsertValues(table, ins.column_names, str_values) catch str_values
+                            else
+                                str_values;
+                            defer if (ins.column_names.len > 0 and row_values.ptr != str_values.ptr) self.allocator.free(row_values);
+                            if (!try self.validateCheckConstraints(table, row_values)) {
+                                return .{ .err = "CHECK constraint failed" };
+                            }
+                            if (ins.on_conflict) |oc| {
+                                try self.executeUpsertRow(table, row_values, oc);
+                            } else if (ins.replace_mode) {
+                                self.replaceRow(table, row_values);
+                            } else if (ins.ignore_mode) {
+                                if (!self.hasPkConflict(table, row_values) and !self.hasUniqueConflict(table, row_values)) {
+                                    try table.insertRow(row_values);
+                                }
+                            } else {
+                                if (self.hasUniqueConflict(table, row_values)) {
+                                    return .{ .err = "UNIQUE constraint failed" };
+                                }
+                                try table.insertRow(row_values);
+                            }
+                        }
+                        if (ins.returning) |ret| {
+                            const rows = table.storage().scan();
+                            return self.buildReturningResult(table, rows[initial_len..], ret);
+                        }
+                        return .ok;
+                    }
+
+                    // Legacy string-based VALUES path
                     // Expand partial column lists with default values
                     const values = if (ins.column_names.len > 0)
                         self.expandInsertValues(table, ins.column_names, ins.values) catch ins.values

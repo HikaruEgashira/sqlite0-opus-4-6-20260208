@@ -341,6 +341,7 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         values: []const []const u8, // first row values (or empty for INSERT SELECT)
         extra_rows: []const []const []const u8, // additional rows for multi-row INSERT
+        value_exprs: []const []const *const Expr = &.{}, // expression-based rows (when VALUES has expressions)
         select_sql: ?[]const u8 = null, // INSERT INTO ... SELECT (raw SQL)
         replace_mode: bool = false, // REPLACE INTO / INSERT OR REPLACE behavior
         ignore_mode: bool = false, // INSERT OR IGNORE behavior
@@ -892,15 +893,19 @@ pub const Parser = struct {
 
         _ = try self.expect(.kw_values);
 
-        const first_row = try self.parseValueTuple();
-
-        // Parse additional rows: , (val1, val2, ...)
-        var extra_rows: std.ArrayList([]const []const u8) = .{};
+        // Try expression-based parsing first
+        var all_expr_rows: std.ArrayList([]const *const Expr) = .{};
+        const first_expr_row = try self.parseValueTupleExpr();
+        all_expr_rows.append(self.allocator, first_expr_row) catch return ParseError.OutOfMemory;
         while (self.peek().type == .comma) {
             _ = self.advance();
-            const row = try self.parseValueTuple();
-            extra_rows.append(self.allocator, row) catch return ParseError.OutOfMemory;
+            const expr_row = try self.parseValueTupleExpr();
+            all_expr_rows.append(self.allocator, expr_row) catch return ParseError.OutOfMemory;
         }
+        const value_exprs = all_expr_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+
+        // Keep backward-compat fields empty
+        const first_row: []const []const u8 = &.{};
 
         // Parse optional ON CONFLICT clause (contextual keywords)
         var on_conflict: ?Statement.OnConflict = null;
@@ -980,7 +985,8 @@ pub const Parser = struct {
             .insert = .{
                 .table_name = name_tok.lexeme,
                 .values = first_row,
-                .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .extra_rows = &.{},
+                .value_exprs = value_exprs,
                 .replace_mode = replace_mode,
                 .ignore_mode = ignore_mode,
                 .column_names = col_names.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
@@ -996,13 +1002,13 @@ pub const Parser = struct {
         const name_tok = try self.expect(.identifier);
 
         _ = try self.expect(.kw_values);
-        const first_row = try self.parseValueTuple();
-
-        var extra_rows: std.ArrayList([]const []const u8) = .{};
+        var all_expr_rows: std.ArrayList([]const *const Expr) = .{};
+        const first_expr_row = try self.parseValueTupleExpr();
+        all_expr_rows.append(self.allocator, first_expr_row) catch return ParseError.OutOfMemory;
         while (self.peek().type == .comma) {
             _ = self.advance();
-            const row = try self.parseValueTuple();
-            extra_rows.append(self.allocator, row) catch return ParseError.OutOfMemory;
+            const expr_row = try self.parseValueTupleExpr();
+            all_expr_rows.append(self.allocator, expr_row) catch return ParseError.OutOfMemory;
         }
 
         _ = try self.expect(.semicolon);
@@ -1010,8 +1016,9 @@ pub const Parser = struct {
         return Statement{
             .insert = .{
                 .table_name = name_tok.lexeme,
-                .values = first_row,
-                .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .values = &.{},
+                .extra_rows = &.{},
+                .value_exprs = all_expr_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .replace_mode = true,
             },
         };
@@ -1051,6 +1058,22 @@ pub const Parser = struct {
 
         _ = try self.expect(.rparen);
         return values.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+    }
+
+    fn parseValueTupleExpr(self: *Parser) ParseError![]const *const Expr {
+        _ = try self.expect(.lparen);
+        var exprs: std.ArrayList(*const Expr) = .{};
+        while (true) {
+            const expr = try self.parseExpr();
+            exprs.append(self.allocator, expr) catch return ParseError.OutOfMemory;
+            if (self.peek().type == .comma) {
+                _ = self.advance();
+            } else {
+                break;
+            }
+        }
+        _ = try self.expect(.rparen);
+        return exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
     }
 
     fn extractInsertSelectSQL(self: *Parser) ParseError![]const u8 {
@@ -2862,11 +2885,21 @@ test "parse INSERT INTO" {
 
     switch (stmt) {
         .insert => |ins| {
-            defer allocator.free(ins.values);
+            defer {
+                for (ins.value_exprs) |row| {
+                    for (row) |e| {
+                        const ptr = @constCast(e);
+                        allocator.destroy(ptr);
+                    }
+                    allocator.free(row);
+                }
+                allocator.free(ins.value_exprs);
+            }
             try std.testing.expectEqualStrings("users", ins.table_name);
-            try std.testing.expectEqual(@as(usize, 2), ins.values.len);
-            try std.testing.expectEqualStrings("1", ins.values[0]);
-            try std.testing.expectEqualStrings("'alice'", ins.values[1]);
+            try std.testing.expectEqual(@as(usize, 1), ins.value_exprs.len);
+            try std.testing.expectEqual(@as(usize, 2), ins.value_exprs[0].len);
+            try std.testing.expectEqual(@as(i64, 1), ins.value_exprs[0][0].integer_literal);
+            try std.testing.expectEqualStrings("alice", ins.value_exprs[0][1].string_literal);
         },
         else => return error.UnexpectedToken,
     }
