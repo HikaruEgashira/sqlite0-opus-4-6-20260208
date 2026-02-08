@@ -62,12 +62,22 @@
 - ユニットテスト: 23/23 passing（メモリリーク0）
 - Differential Test: **38/38 passing**（前回36 → 追加2件）
 
-## 予定
+## Phase 6d: ストレージ抽象化 + B-Tree
 
-### Phase 6d: ストレージ抽象化 + B-Tree
-- StorageBackend traitの定義
-- B-Treeデータ構造の実装
-- 行検索・走査の抽象化
+### Phase 6d-2: RowStorage抽象化レイヤー（完了）
+- [x] RowStorage vtableインターフェース定義
+- [x] ArrayListStorage バックエンド実装
+- [x] Table.zigを ArrayListStorage 使用に修正
+- [x] root.zigの20個アクセスサイトをstorage()経由に変更
+- [x] Differential Test: 38/38 passing（変化なし）
+- [x] メモリリーク: 0
+
+### 次のステップ
+
+### Phase 6d-3: インメモリB-Tree実装（予定）
+- rowid（オートインクリメント）対応
+- B+TreeStorageバックエンド実装
+- 範囲検索機能
 
 ### Phase 6e: ファイル永続化
 - ページベースのファイルI/O
