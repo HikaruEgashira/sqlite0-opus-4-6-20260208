@@ -2618,60 +2618,72 @@ pub const Database = struct {
 
         switch (func) {
             .sum => {
-                var total: i64 = 0;
+                var total_f: f64 = 0;
                 var has_value = false;
+                var has_float = false;
                 if (is_distinct) {
-                    var seen: std.ArrayList(i64) = .{};
-                    defer seen.deinit(self.allocator);
+                    var seen_vals: std.ArrayList(f64) = .{};
+                    defer seen_vals.deinit(self.allocator);
                     for (rows) |row| {
-                        if (row.values[col_idx] == .integer) {
-                            const v = row.values[col_idx].integer;
+                        const val = row.values[col_idx];
+                        if (val == .null_val) continue;
+                        if (self.isFloatValue(val)) has_float = true;
+                        if (self.valueToF64(val)) |fv| {
                             var found = false;
-                            for (seen.items) |s| {
-                                if (s == v) { found = true; break; }
+                            for (seen_vals.items) |s| {
+                                if (s == fv) { found = true; break; }
                             }
                             if (!found) {
-                                seen.append(self.allocator, v) catch {};
-                                total += v;
+                                seen_vals.append(self.allocator, fv) catch {};
+                                total_f += fv;
                                 has_value = true;
                             }
                         }
                     }
                 } else {
                     for (rows) |row| {
-                        if (row.values[col_idx] == .integer) {
-                            total += row.values[col_idx].integer;
+                        const val = row.values[col_idx];
+                        if (val == .null_val) continue;
+                        if (self.isFloatValue(val)) has_float = true;
+                        if (self.valueToF64(val)) |fv| {
+                            total_f += fv;
                             has_value = true;
                         }
                     }
                 }
                 if (!has_value) return .null_val;
-                return .{ .integer = total };
+                if (has_float) {
+                    return self.formatFloat(total_f);
+                }
+                return .{ .integer = @intFromFloat(total_f) };
             },
             .avg => {
                 var total: f64 = 0;
                 var cnt: usize = 0;
                 if (is_distinct) {
-                    var seen: std.ArrayList(i64) = .{};
-                    defer seen.deinit(self.allocator);
+                    var seen_vals: std.ArrayList(f64) = .{};
+                    defer seen_vals.deinit(self.allocator);
                     for (rows) |row| {
-                        if (row.values[col_idx] == .integer) {
-                            const v = row.values[col_idx].integer;
+                        const val = row.values[col_idx];
+                        if (val == .null_val) continue;
+                        if (self.valueToF64(val)) |fv| {
                             var found = false;
-                            for (seen.items) |s| {
-                                if (s == v) { found = true; break; }
+                            for (seen_vals.items) |s| {
+                                if (s == fv) { found = true; break; }
                             }
                             if (!found) {
-                                seen.append(self.allocator, v) catch {};
-                                total += @floatFromInt(v);
+                                seen_vals.append(self.allocator, fv) catch {};
+                                total += fv;
                                 cnt += 1;
                             }
                         }
                     }
                 } else {
                     for (rows) |row| {
-                        if (row.values[col_idx] == .integer) {
-                            total += @floatFromInt(row.values[col_idx].integer);
+                        const val = row.values[col_idx];
+                        if (val == .null_val) continue;
+                        if (self.valueToF64(val)) |fv| {
+                            total += fv;
                             cnt += 1;
                         }
                     }
@@ -2690,6 +2702,10 @@ pub const Database = struct {
                         min_val = v;
                     }
                 }
+                // Duplicate text to avoid freeing table-owned data
+                if (min_val == .text) {
+                    return .{ .text = try dupeStr(self.allocator, min_val.text) };
+                }
                 return min_val;
             },
             .max => {
@@ -2701,6 +2717,10 @@ pub const Database = struct {
                     if (max_val == .null_val or compareValuesOrder(v, max_val) == .gt) {
                         max_val = v;
                     }
+                }
+                // Duplicate text to avoid freeing table-owned data
+                if (max_val == .text) {
+                    return .{ .text = try dupeStr(self.allocator, max_val.text) };
                 }
                 return max_val;
             },
@@ -2742,26 +2762,14 @@ pub const Database = struct {
             .total => {
                 var sum: f64 = 0;
                 for (rows) |row| {
-                    if (row.values[col_idx] == .integer) {
-                        sum += @floatFromInt(row.values[col_idx].integer);
+                    const val = row.values[col_idx];
+                    if (val == .null_val) continue;
+                    if (self.valueToF64(val)) |fv| {
+                        sum += fv;
                     }
                 }
                 // TOTAL always returns real, even for empty set (0.0)
-                var buf: [64]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{sum}) catch return error.OutOfMemory;
-                var has_dot = false;
-                for (slice) |ch| {
-                    if (ch == '.') { has_dot = true; break; }
-                }
-                if (has_dot) {
-                    return .{ .text = try dupeStr(self.allocator, slice) };
-                } else {
-                    var dot_buf: [66]u8 = undefined;
-                    @memcpy(dot_buf[0..slice.len], slice);
-                    dot_buf[slice.len] = '.';
-                    dot_buf[slice.len + 1] = '0';
-                    return .{ .text = try dupeStr(self.allocator, dot_buf[0 .. slice.len + 2]) };
-                }
+                return self.formatFloat(sum);
             },
             else => return .null_val,
         }
