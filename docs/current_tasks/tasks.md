@@ -146,6 +146,18 @@
 - [x] Expressions in INSERT VALUES (string concat, arithmetic, functions)
 - Differential Test: **154/154 passing**
 
+### Phase 6d-16: SQL機能充実・バグ修正（完了）
+- [x] 集約式のSELECT/ORDER BY対応（SUM(val)*2, ROUND(AVG(val)), COUNT(*)||' items'等）
+- [x] evalGroupExprのscalar_func/case_when/unary_op/concat対応
+- [x] evalScalarFuncValues（値ベースのスカラー関数評価）
+- [x] 相関サブクエリ（outer_contextメカニズム）
+- [x] EXISTS/NOT EXISTS/IN相関サブクエリ
+- [x] qualified_ref（e.salary）の集約関数対応
+- [x] exprAsAggregateのqualified_ref対応（"table.column"形式）
+- [x] LEFT JOIN COUNT(qualified_ref)のNULL行カウント修正
+- [x] AliasOffset追跡によるJOIN集約の正しいカラム解決
+- Differential Test: **158/158 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）

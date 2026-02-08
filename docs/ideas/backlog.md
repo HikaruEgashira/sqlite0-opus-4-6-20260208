@@ -94,6 +94,10 @@
 - ~~SUM/AVG/TOTAL浮動小数点対応~~ ✓
 - ~~型なしカラム（CREATE TABLE t (val)）~~ ✓
 - ~~VALUES式（INSERT VALUES (1+'a'||'b', UPPER('x'))）~~ ✓
+- ~~集約式（SUM(val)*2, ROUND(AVG(val)), CASE WHEN SUM > x）~~ ✓
+- ~~相関サブクエリ（correlated subqueries）~~ ✓
+- ~~qualified_ref集約（COUNT(t.id), SUM(t.val)）~~ ✓
+- ~~LEFT JOIN COUNT NULL修正（COUNT(right.col) = 0 for unmatched）~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
