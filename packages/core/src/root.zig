@@ -196,6 +196,9 @@ pub const Database = struct {
     pub fn evalExpr(self: *Database, expr: *const Expr, tbl: *const Table, row: Row) !Value {
         switch (expr.*) {
             .integer_literal => |n| return .{ .integer = n },
+            .float_literal => |f| {
+                return self.formatFloat(f);
+            },
             .string_literal => |s| return .{ .text = try dupeStr(self.allocator, s) },
             .null_literal => return .null_val,
             .star => return .null_val, // star is not valid in eval context
@@ -299,6 +302,20 @@ pub const Database = struct {
                         return .{ .text = result };
                     },
                     .add, .sub, .mul, .div, .mod => {
+                        // Use float arithmetic if either operand is a float
+                        if (self.isFloatValue(left_val) or self.isFloatValue(right_val)) {
+                            const l = self.valueToF64(left_val) orelse return .null_val;
+                            const r = self.valueToF64(right_val) orelse return .null_val;
+                            const result: f64 = switch (bin.op) {
+                                .add => l + r,
+                                .sub => l - r,
+                                .mul => l * r,
+                                .div => if (r == 0.0) return .null_val else l / r,
+                                .mod => if (r == 0.0) return .null_val else @rem(l, r),
+                                else => unreachable,
+                            };
+                            return self.formatFloat(result);
+                        }
                         const l = self.valueToI64(left_val);
                         const r = self.valueToI64(right_val);
                         if (l == null or r == null) return .null_val;
@@ -514,6 +531,20 @@ pub const Database = struct {
 
                 switch (bin.op) {
                     .add, .sub, .mul, .div, .mod => {
+                        // Use float arithmetic if either operand is a float
+                        if (self.isFloatValue(left_val) or self.isFloatValue(right_val)) {
+                            const l = self.valueToF64(left_val) orelse return .null_val;
+                            const r = self.valueToF64(right_val) orelse return .null_val;
+                            const result: f64 = switch (bin.op) {
+                                .add => l + r,
+                                .sub => l - r,
+                                .mul => l * r,
+                                .div => if (r == 0.0) return .null_val else l / r,
+                                .mod => if (r == 0.0) return .null_val else @rem(l, r),
+                                else => unreachable,
+                            };
+                            return self.formatFloat(result);
+                        }
                         const l = self.valueToI64(left_val);
                         const r = self.valueToI64(right_val);
                         if (l == null or r == null) return .null_val;
@@ -1126,6 +1157,43 @@ pub const Database = struct {
             .text => |t| return std.fmt.parseInt(i64, t, 10) catch null,
             .null_val => return null,
         }
+    }
+
+    fn valueToF64(_: *Database, val: Value) ?f64 {
+        switch (val) {
+            .integer => |n| return @floatFromInt(n),
+            .text => |t| return std.fmt.parseFloat(f64, t) catch null,
+            .null_val => return null,
+        }
+    }
+
+    fn isFloatValue(_: *Database, val: Value) bool {
+        switch (val) {
+            .text => |t| {
+                // Check if it contains a decimal point (float value)
+                for (t) |c| {
+                    if (c == '.') return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn formatFloat(self: *Database, f: f64) Value {
+        // Use {d} format and ensure decimal point is present
+        const txt = std.fmt.allocPrint(self.allocator, "{d}", .{f}) catch return .null_val;
+        // Check if result has a decimal point
+        for (txt) |c| {
+            if (c == '.' or c == 'e' or c == 'E') return .{ .text = txt };
+        }
+        // Append ".0" to make it look like a float
+        const with_dot = std.fmt.allocPrint(self.allocator, "{s}.0", .{txt}) catch {
+            self.allocator.free(txt);
+            return .null_val;
+        };
+        self.allocator.free(txt);
+        return .{ .text = with_dot };
     }
 
     fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row, separator: []const u8, is_distinct: bool) !Value {

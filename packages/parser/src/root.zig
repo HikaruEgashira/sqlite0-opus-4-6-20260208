@@ -137,6 +137,7 @@ pub const ScalarFunc = enum {
 
 pub const Expr = union(enum) {
     integer_literal: i64,
+    float_literal: f64,
     string_literal: []const u8,
     column_ref: []const u8,
     null_literal: void,
@@ -431,6 +432,7 @@ pub const Parser = struct {
             const col_type_str: []const u8 = switch (col_type_tok.type) {
                 .kw_integer => "INTEGER",
                 .kw_text => "TEXT",
+                .kw_real => "REAL",
                 else => return ParseError.UnexpectedToken,
             };
 
@@ -643,13 +645,13 @@ pub const Parser = struct {
         while (true) {
             const val_tok = self.advance();
             switch (val_tok.type) {
-                .integer_literal, .string_literal, .identifier => {
+                .integer_literal, .float_literal, .string_literal, .identifier => {
                     values.append(self.allocator, val_tok.lexeme) catch return ParseError.OutOfMemory;
                 },
                 .minus => {
-                    // Handle negative numbers: - followed by integer
+                    // Handle negative numbers: - followed by integer/float
                     const num_tok = self.advance();
-                    if (num_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+                    if (num_tok.type != .integer_literal and num_tok.type != .float_literal) return ParseError.UnexpectedToken;
                     // Use source slice spanning minus and integer tokens (no allocation)
                     const start = val_tok.lexeme.ptr;
                     const end = num_tok.lexeme.ptr + num_tok.lexeme.len;
@@ -1313,6 +1315,12 @@ pub const Parser = struct {
                 const num = std.fmt.parseInt(i64, num_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
                 return self.allocExpr(.{ .integer_literal = -num });
             }
+            // Check for float literal
+            if (self.peek().type == .float_literal) {
+                const num_tok = self.advance();
+                const num = std.fmt.parseFloat(f64, num_tok.lexeme) catch return ParseError.UnexpectedToken;
+                return self.allocExpr(.{ .float_literal = -num });
+            }
             const operand = try self.parsePrimary();
             // Desugar -x to 0 - x
             const zero = try self.allocExpr(.{ .integer_literal = 0 });
@@ -1411,6 +1419,13 @@ pub const Parser = struct {
             _ = self.advance();
             const num = std.fmt.parseInt(i64, tok.lexeme, 10) catch return ParseError.UnexpectedToken;
             return self.allocExpr(.{ .integer_literal = num });
+        }
+
+        // Float literal
+        if (tok.type == .float_literal) {
+            _ = self.advance();
+            const num = std.fmt.parseFloat(f64, tok.lexeme) catch return ParseError.UnexpectedToken;
+            return self.allocExpr(.{ .float_literal = num });
         }
 
         // String literal
@@ -1867,6 +1882,7 @@ pub const Parser = struct {
             const col_type_str: []const u8 = switch (col_type_tok.type) {
                 .kw_integer => "INTEGER",
                 .kw_text => "TEXT",
+                .kw_real => "REAL",
                 else => return ParseError.UnexpectedToken,
             };
             _ = try self.expect(.semicolon);

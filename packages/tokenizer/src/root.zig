@@ -76,9 +76,11 @@ pub const TokenType = enum {
     kw_default,
     kw_autoincrement,
     kw_check,
+    kw_real,
 
     // Literals
     integer_literal,
+    float_literal,
     string_literal,
     identifier,
 
@@ -253,6 +255,16 @@ pub const Tokenizer = struct {
         while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
             self.pos += 1;
         }
+        // Check for decimal point (float literal)
+        if (self.pos < self.source.len and self.source[self.pos] == '.' and
+            self.pos + 1 < self.source.len and std.ascii.isDigit(self.source[self.pos + 1]))
+        {
+            self.pos += 1; // skip '.'
+            while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
+                self.pos += 1;
+            }
+            return .{ .type = .float_literal, .lexeme = self.source[start..self.pos] };
+        }
         return .{ .type = .integer_literal, .lexeme = self.source[start..self.pos] };
     }
 
@@ -342,6 +354,7 @@ pub const Tokenizer = struct {
             .{ "DEFAULT", TokenType.kw_default },
             .{ "AUTOINCREMENT", TokenType.kw_autoincrement },
             .{ "CHECK", TokenType.kw_check },
+            .{ "REAL", TokenType.kw_real },
         };
 
         inline for (keywords) |entry| {
