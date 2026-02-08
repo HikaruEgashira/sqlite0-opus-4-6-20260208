@@ -63,6 +63,7 @@ pub const TokenType = enum {
     kw_intersect,
     kw_except,
     kw_glob,
+    kw_between,
 
     // Literals
     integer_literal,
@@ -289,6 +290,7 @@ pub const Tokenizer = struct {
             .{ "INTERSECT", TokenType.kw_intersect },
             .{ "EXCEPT", TokenType.kw_except },
             .{ "GLOB", TokenType.kw_glob },
+            .{ "BETWEEN", TokenType.kw_between },
         };
 
         inline for (keywords) |entry| {

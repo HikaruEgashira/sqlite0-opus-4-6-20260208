@@ -726,6 +726,18 @@ pub const Parser = struct {
                 continue;
             }
 
+            // BETWEEN a AND b → left >= a AND left <= b
+            if (self.peek().type == .kw_between) {
+                _ = self.advance();
+                const low = try self.parseAddSub();
+                _ = try self.expect(.kw_and);
+                const high = try self.parseAddSub();
+                const ge_expr = try self.allocExpr(.{ .binary_op = .{ .op = .ge, .left = left, .right = low } });
+                const le_expr = try self.allocExpr(.{ .binary_op = .{ .op = .le, .left = left, .right = high } });
+                left = try self.allocExpr(.{ .binary_op = .{ .op = .logical_and, .left = ge_expr, .right = le_expr } });
+                continue;
+            }
+
             // IN (SELECT ...)
             if (self.peek().type == .kw_in) {
                 _ = self.advance();
