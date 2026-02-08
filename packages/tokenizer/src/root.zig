@@ -90,6 +90,8 @@ pub const TokenType = enum {
     divide,
     concat,  // ||
 
+    modulo, // %
+
     // Special
     eof,
     invalid,
@@ -153,6 +155,7 @@ pub const Tokenizer = struct {
             '+' => .plus,
             '-' => .minus,
             '/' => .divide,
+            '%' => .modulo,
             else => null,
         };
 

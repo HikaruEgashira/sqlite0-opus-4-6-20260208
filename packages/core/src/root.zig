@@ -290,7 +290,7 @@ pub const Database = struct {
                         @memcpy(result[l.len..], r);
                         return .{ .text = result };
                     },
-                    .add, .sub, .mul, .div => {
+                    .add, .sub, .mul, .div, .mod => {
                         const l = self.valueToI64(left_val);
                         const r = self.valueToI64(right_val);
                         if (l == null or r == null) return .null_val;
@@ -299,6 +299,7 @@ pub const Database = struct {
                             .sub => l.? - r.?,
                             .mul => l.? * r.?,
                             .div => if (r.? == 0) return .null_val else @divTrunc(l.?, r.?),
+                            .mod => if (r.? == 0) return .null_val else @rem(l.?, r.?),
                             else => unreachable,
                         } };
                     },

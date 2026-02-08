@@ -69,6 +69,7 @@ pub const BinOp = enum {
     sub, // -
     mul, // *
     div, // /
+    mod, // %
     concat, // ||
     eq, // =
     ne, // !=
@@ -864,7 +865,7 @@ pub const Parser = struct {
         return left;
     }
 
-    /// Parse *, / (higher precedence)
+    /// Parse *, /, % (higher precedence)
     fn parseMulDiv(self: *Parser) ParseError!*const Expr {
         var left = try self.parsePrimary();
 
@@ -872,6 +873,7 @@ pub const Parser = struct {
             const op: BinOp = switch (self.peek().type) {
                 .star => .mul,
                 .divide => .div,
+                .modulo => .mod,
                 else => break,
             };
             _ = self.advance();
