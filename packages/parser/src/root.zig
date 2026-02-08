@@ -258,7 +258,7 @@ pub const Statement = union(enum) {
         join: ?JoinClause,
         where: ?WhereClause,
         where_expr: ?*const Expr = null, // Expr-based WHERE (Phase 6c)
-        group_by: ?[]const u8, // column name
+        group_by: ?[]const []const u8, // column names (multiple GROUP BY columns)
         having: ?HavingClause,
         order_by: ?OrderByClause,
         limit: ?i64,
@@ -749,12 +749,21 @@ pub const Parser = struct {
         }
 
         // Parse optional GROUP BY
-        var group_by: ?[]const u8 = null;
+        var group_by: ?[]const []const u8 = null;
         if (self.peek().type == .kw_group) {
             _ = self.advance();
             _ = try self.expect(.kw_by);
-            const gb_tok = try self.expect(.identifier);
-            group_by = gb_tok.lexeme;
+            var gb_cols: std.ArrayList([]const u8) = .{};
+            while (true) {
+                const gb_tok = try self.expect(.identifier);
+                gb_cols.append(self.allocator, gb_tok.lexeme) catch return ParseError.OutOfMemory;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                } else {
+                    break;
+                }
+            }
+            group_by = gb_cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         }
 
         // Parse optional HAVING

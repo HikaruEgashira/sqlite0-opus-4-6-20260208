@@ -1026,8 +1026,8 @@ pub const Database = struct {
     }
 
     fn executeAggregate(self: *Database, tbl: *const Table, sel: Statement.Select, rows: []const Row) !ExecuteResult {
-        if (sel.group_by) |gb_col| {
-            return self.executeGroupByAggregate(tbl, sel, rows, gb_col);
+        if (sel.group_by) |gb_cols| {
+            return self.executeGroupByAggregate(tbl, sel, rows, gb_cols);
         }
 
         var values = try self.allocator.alloc(Value, sel.select_exprs.len);
@@ -1066,11 +1066,20 @@ pub const Database = struct {
         return .{ .rows = proj_rows };
     }
 
-    fn executeGroupByAggregate(self: *Database, tbl: *const Table, sel: Statement.Select, rows: []const Row, gb_col: []const u8) !ExecuteResult {
-        const gb_idx = tbl.findColumnIndex(gb_col) orelse return .{ .err = "column not found" };
+    fn executeGroupByAggregate(self: *Database, tbl: *const Table, sel: Statement.Select, rows: []const Row, gb_cols: []const []const u8) !ExecuteResult {
+        // Resolve GROUP BY column indices
+        var gb_indices = try self.allocator.alloc(usize, gb_cols.len);
+        defer self.allocator.free(gb_indices);
+        for (gb_cols, 0..) |col, i| {
+            gb_indices[i] = tbl.findColumnIndex(col) orelse return .{ .err = "column not found" };
+        }
 
-        var group_keys: std.ArrayList(Value) = .{};
-        defer group_keys.deinit(self.allocator);
+        // Group rows: use first GROUP BY column as primary key, compare all columns for multi-column grouping
+        var group_keys: std.ArrayList([]Value) = .{};
+        defer {
+            for (group_keys.items) |gk| self.allocator.free(gk);
+            group_keys.deinit(self.allocator);
+        }
         var group_rows: std.ArrayList(std.ArrayList(Row)) = .{};
         defer {
             for (group_rows.items) |*gr| {
@@ -1080,10 +1089,16 @@ pub const Database = struct {
         }
 
         for (rows) |row| {
-            const key = row.values[gb_idx];
             var found_idx: ?usize = null;
             for (group_keys.items, 0..) |gk, gi| {
-                if (compareValuesOrder(key, gk) == .eq) {
+                var all_eq = true;
+                for (gb_indices, 0..) |idx, ki| {
+                    if (compareValuesOrder(row.values[idx], gk[ki]) != .eq) {
+                        all_eq = false;
+                        break;
+                    }
+                }
+                if (all_eq) {
                     found_idx = gi;
                     break;
                 }
@@ -1091,6 +1106,8 @@ pub const Database = struct {
             if (found_idx) |idx| {
                 try group_rows.items[idx].append(self.allocator, row);
             } else {
+                var key = try self.allocator.alloc(Value, gb_indices.len);
+                for (gb_indices, 0..) |idx, ki| key[ki] = row.values[idx];
                 try group_keys.append(self.allocator, key);
                 var new_list: std.ArrayList(Row) = .{};
                 try new_list.append(self.allocator, row);
@@ -1129,32 +1146,45 @@ pub const Database = struct {
             proj_rows[gi] = .{ .values = values };
         }
 
-        // Sort groups by group key to match sqlite3 output order
-        // Find the index of the group-by column in select_exprs
-        var gb_expr_idx: ?usize = null;
-        for (sel.select_exprs, 0..) |expr, ei| {
-            switch (expr) {
-                .column => |col_name| {
-                    if (std.mem.eql(u8, col_name, gb_col)) {
-                        gb_expr_idx = ei;
-                        break;
-                    }
-                },
-                else => {},
+        // Sort groups by group key columns to match sqlite3 output order
+        // Find the indices of GROUP BY columns in select_exprs
+        var gb_sort_indices: std.ArrayList(usize) = .{};
+        defer gb_sort_indices.deinit(self.allocator);
+        for (gb_cols) |gb_col| {
+            for (sel.select_exprs, 0..) |expr, ei| {
+                switch (expr) {
+                    .column => |col_name| {
+                        if (std.mem.eql(u8, col_name, gb_col)) {
+                            gb_sort_indices.append(self.allocator, ei) catch break;
+                            break;
+                        }
+                    },
+                    else => {},
+                }
             }
         }
-        if (gb_expr_idx) |si| {
-            const GBSortCtx = struct {
-                idx: usize,
+        if (gb_sort_indices.items.len > 0) {
+            const MultiGBSortCtx = struct {
+                indices: []const usize,
                 fn lessThan(ctx: @This(), a: Row, b: Row) bool {
-                    return compareValuesOrder(a.values[ctx.idx], b.values[ctx.idx]) == .lt;
+                    for (ctx.indices) |idx| {
+                        const cmp = compareValuesOrder(a.values[idx], b.values[idx]);
+                        if (cmp == .eq) continue;
+                        return cmp == .lt;
+                    }
+                    return false;
                 }
             };
-            const ctx = GBSortCtx{ .idx = si };
-            std.mem.sort(Row, proj_rows, ctx, GBSortCtx.lessThan);
+            const ctx = MultiGBSortCtx{ .indices = gb_sort_indices.items };
+            std.mem.sort(Row, proj_rows, ctx, MultiGBSortCtx.lessThan);
             std.mem.sort([]Value, proj_values, ctx, struct {
-                fn lessThan(c: GBSortCtx, a: []Value, b: []Value) bool {
-                    return compareValuesOrder(a[c.idx], b[c.idx]) == .lt;
+                fn lessThan(c: MultiGBSortCtx, a: []Value, b: []Value) bool {
+                    for (c.indices) |idx| {
+                        const cmp = compareValuesOrder(a[idx], b[idx]);
+                        if (cmp == .eq) continue;
+                        return cmp == .lt;
+                    }
+                    return false;
                 }
             }.lessThan);
         }
@@ -2287,6 +2317,7 @@ pub const Database = struct {
                     self.allocator.free(sel.result_exprs);
                 }
                 defer if (sel.where_expr) |we| self.freeWhereExpr(we);
+                defer if (sel.group_by) |gb| self.allocator.free(gb);
                 return self.executeSelect(sel);
             },
             .delete => |del| {
