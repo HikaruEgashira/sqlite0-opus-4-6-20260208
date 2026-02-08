@@ -77,6 +77,7 @@ pub const TokenType = enum {
     kw_autoincrement,
     kw_check,
     kw_real,
+    kw_full,
 
     // Literals
     integer_literal,
@@ -360,6 +361,7 @@ pub const Tokenizer = struct {
             .{ "AUTOINCREMENT", TokenType.kw_autoincrement },
             .{ "CHECK", TokenType.kw_check },
             .{ "REAL", TokenType.kw_real },
+            .{ "FULL", TokenType.kw_full },
         };
 
         inline for (keywords) |entry| {

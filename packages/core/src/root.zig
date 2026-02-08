@@ -2137,7 +2137,7 @@ pub const Database = struct {
                             try new_rows.append(self.allocator, .{ .values = values });
                         }
                     }
-                    if (!matched and (join.join_type == .left)) {
+                    if (!matched and (join.join_type == .left or join.join_type == .full)) {
                         var values = try self.allocator.alloc(Value, total_cols);
                         @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
                         for (left_col_count..total_cols) |ci| values[ci] = .{ .null_val = {} };
@@ -2146,7 +2146,7 @@ pub const Database = struct {
                     }
                 }
                 // RIGHT JOIN: also add right rows that didn't match any left row
-                if (join.join_type == .right) {
+                if (join.join_type == .right or join.join_type == .full) {
                     for (right_rows) |right_row| {
                         var matched = false;
                         for (joined_rows.items) |left_row| {
