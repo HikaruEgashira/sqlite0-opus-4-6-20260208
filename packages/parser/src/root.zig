@@ -133,6 +133,10 @@ pub const ScalarFunc = enum {
     ifnull,
     random,
     sign,
+    date_fn,
+    time_fn,
+    datetime_fn,
+    strftime_fn,
 };
 
 pub const Expr = union(enum) {
@@ -1659,6 +1663,10 @@ pub const Parser = struct {
             .{ "IFNULL", ScalarFunc.ifnull },
             .{ "RANDOM", ScalarFunc.random },
             .{ "SIGN", ScalarFunc.sign },
+            .{ "DATE", ScalarFunc.date_fn },
+            .{ "TIME", ScalarFunc.time_fn },
+            .{ "DATETIME", ScalarFunc.datetime_fn },
+            .{ "STRFTIME", ScalarFunc.strftime_fn },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {

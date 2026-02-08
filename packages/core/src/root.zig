@@ -934,7 +934,176 @@ pub const Database = struct {
                 const n = self.valueToI64(val) orelse return .null_val;
                 return .{ .integer = if (n > 0) @as(i64, 1) else if (n < 0) @as(i64, -1) else 0 };
             },
+            .date_fn => {
+                return self.evalDateTimeFunc(args, tbl, row, .date_only);
+            },
+            .time_fn => {
+                return self.evalDateTimeFunc(args, tbl, row, .time_only);
+            },
+            .datetime_fn => {
+                return self.evalDateTimeFunc(args, tbl, row, .datetime);
+            },
+            .strftime_fn => {
+                return self.evalStrftime(args, tbl, row);
+            },
         }
+    }
+
+    const DateTimePart = enum { date_only, time_only, datetime };
+
+    /// Components of a parsed date/time
+    const DateTimeComponents = struct {
+        year: u32,
+        month: u8,
+        day: u8,
+        hour: u8,
+        minute: u8,
+        second: u8,
+    };
+
+    /// Parse a date/time string or 'now' into components
+    fn parseDateTimeInput(self: *Database, text: []const u8) ?DateTimeComponents {
+        _ = self;
+        // Handle 'now'
+        if (std.ascii.eqlIgnoreCase(text, "now")) {
+            const ts: u64 = @intCast(std.time.timestamp());
+            const es = std.time.epoch.EpochSeconds{ .secs = ts };
+            const day_secs = es.getDaySeconds();
+            const epoch_day = es.getEpochDay();
+            const year_day = epoch_day.calculateYearDay();
+            const month_day = year_day.calculateMonthDay();
+            return .{
+                .year = year_day.year,
+                .month = @intFromEnum(month_day.month),
+                .day = month_day.day_index + 1,
+                .hour = day_secs.getHoursIntoDay(),
+                .minute = day_secs.getMinutesIntoHour(),
+                .second = day_secs.getSecondsIntoMinute(),
+            };
+        }
+        // Parse 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
+        if (text.len >= 10 and text[4] == '-' and text[7] == '-') {
+            const year = std.fmt.parseInt(u32, text[0..4], 10) catch return null;
+            const month = std.fmt.parseInt(u8, text[5..7], 10) catch return null;
+            const day = std.fmt.parseInt(u8, text[8..10], 10) catch return null;
+            var hour: u8 = 0;
+            var minute: u8 = 0;
+            var second: u8 = 0;
+            if (text.len >= 19 and text[10] == ' ' and text[13] == ':' and text[16] == ':') {
+                hour = std.fmt.parseInt(u8, text[11..13], 10) catch return null;
+                minute = std.fmt.parseInt(u8, text[14..16], 10) catch return null;
+                second = std.fmt.parseInt(u8, text[17..19], 10) catch return null;
+            }
+            return .{ .year = year, .month = month, .day = day, .hour = hour, .minute = minute, .second = second };
+        }
+        // Parse 'HH:MM:SS' (time-only input)
+        if (text.len >= 8 and text[2] == ':' and text[5] == ':') {
+            const hour = std.fmt.parseInt(u8, text[0..2], 10) catch return null;
+            const minute = std.fmt.parseInt(u8, text[3..5], 10) catch return null;
+            const second = std.fmt.parseInt(u8, text[6..8], 10) catch return null;
+            return .{ .year = 2000, .month = 1, .day = 1, .hour = hour, .minute = minute, .second = second };
+        }
+        return null;
+    }
+
+    /// Format date/time components based on which part is needed
+    fn formatDateTime(self: *Database, dt: DateTimeComponents, part: DateTimePart) !Value {
+        return switch (part) {
+            .date_only => {
+                const buf = try std.fmt.allocPrint(self.allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{ dt.year, dt.month, dt.day });
+                return .{ .text = buf };
+            },
+            .time_only => {
+                const buf = try std.fmt.allocPrint(self.allocator, "{d:0>2}:{d:0>2}:{d:0>2}", .{ dt.hour, dt.minute, dt.second });
+                return .{ .text = buf };
+            },
+            .datetime => {
+                const buf = try std.fmt.allocPrint(self.allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second });
+                return .{ .text = buf };
+            },
+        };
+    }
+
+    /// Evaluate date/time/datetime functions
+    fn evalDateTimeFunc(self: *Database, args: []const *const Expr, tbl: *const Table, row: Row, part: DateTimePart) !Value {
+        if (args.len < 1) return .null_val;
+        const val = try self.evalExpr(args[0], tbl, row);
+        defer if (val == .text) self.allocator.free(val.text);
+        if (val == .null_val) return .null_val;
+        const text = self.valueToText(val);
+        defer self.allocator.free(text);
+        const dt = self.parseDateTimeInput(text) orelse return .null_val;
+        return self.formatDateTime(dt, part);
+    }
+
+    /// Evaluate strftime(format, timevalue)
+    fn evalStrftime(self: *Database, args: []const *const Expr, tbl: *const Table, row: Row) !Value {
+        if (args.len < 2) return .null_val;
+        // First arg: format string
+        const fmt_val = try self.evalExpr(args[0], tbl, row);
+        defer if (fmt_val == .text) self.allocator.free(fmt_val.text);
+        if (fmt_val == .null_val) return .null_val;
+        const fmt_text = self.valueToText(fmt_val);
+        defer self.allocator.free(fmt_text);
+        // Second arg: time value
+        const time_val = try self.evalExpr(args[1], tbl, row);
+        defer if (time_val == .text) self.allocator.free(time_val.text);
+        if (time_val == .null_val) return .null_val;
+        const time_text = self.valueToText(time_val);
+        defer self.allocator.free(time_text);
+        const dt = self.parseDateTimeInput(time_text) orelse return .null_val;
+        // Build output by replacing format specifiers
+        var result: std.ArrayList(u8) = .{};
+        var i: usize = 0;
+        while (i < fmt_text.len) {
+            if (fmt_text[i] == '%' and i + 1 < fmt_text.len) {
+                const spec = fmt_text[i + 1];
+                switch (spec) {
+                    'Y' => {
+                        const buf = std.fmt.allocPrint(self.allocator, "{d:0>4}", .{dt.year}) catch return .null_val;
+                        defer self.allocator.free(buf);
+                        result.appendSlice(self.allocator, buf) catch return .null_val;
+                    },
+                    'm' => {
+                        const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{dt.month}) catch return .null_val;
+                        defer self.allocator.free(buf);
+                        result.appendSlice(self.allocator, buf) catch return .null_val;
+                    },
+                    'd' => {
+                        const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{dt.day}) catch return .null_val;
+                        defer self.allocator.free(buf);
+                        result.appendSlice(self.allocator, buf) catch return .null_val;
+                    },
+                    'H' => {
+                        const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{dt.hour}) catch return .null_val;
+                        defer self.allocator.free(buf);
+                        result.appendSlice(self.allocator, buf) catch return .null_val;
+                    },
+                    'M' => {
+                        const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{dt.minute}) catch return .null_val;
+                        defer self.allocator.free(buf);
+                        result.appendSlice(self.allocator, buf) catch return .null_val;
+                    },
+                    'S' => {
+                        const buf = std.fmt.allocPrint(self.allocator, "{d:0>2}", .{dt.second}) catch return .null_val;
+                        defer self.allocator.free(buf);
+                        result.appendSlice(self.allocator, buf) catch return .null_val;
+                    },
+                    '%' => {
+                        result.append(self.allocator, '%') catch return .null_val;
+                    },
+                    else => {
+                        result.append(self.allocator, '%') catch return .null_val;
+                        result.append(self.allocator, spec) catch return .null_val;
+                    },
+                }
+                i += 2;
+            } else {
+                result.append(self.allocator, fmt_text[i]) catch return .null_val;
+                i += 1;
+            }
+        }
+        return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
     }
 
     /// Expand partial INSERT values to full row using column list and defaults
