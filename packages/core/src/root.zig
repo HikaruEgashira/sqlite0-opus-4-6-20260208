@@ -4006,6 +4006,55 @@ pub const Database = struct {
         return values;
     }
 
+    /// Build RETURNING result from source rows
+    fn buildReturningResult(self: *Database, table: *const Table, src_rows: []const Row, returning_cols: []const []const u8) !ExecuteResult {
+        const is_star = returning_cols.len == 1 and std.mem.eql(u8, returning_cols[0], "*");
+        const num_cols = if (is_star) table.columns.len else returning_cols.len;
+        var proj_rows = try self.allocator.alloc(Row, src_rows.len);
+        var proj_values = try self.allocator.alloc([]Value, src_rows.len);
+        var alloc_texts: std.ArrayList([]const u8) = .{};
+        for (src_rows, 0..) |row, ri| {
+            var values = try self.allocator.alloc(Value, num_cols);
+            if (is_star) {
+                for (0..num_cols) |ci| {
+                    values[ci] = switch (row.values[ci]) {
+                        .text => |t| blk: {
+                            const d = dupeStr(self.allocator, t) catch break :blk Value.null_val;
+                            alloc_texts.append(self.allocator, d) catch {};
+                            break :blk Value{ .text = d };
+                        },
+                        else => row.values[ci],
+                    };
+                }
+            } else {
+                for (returning_cols, 0..) |col_name, ci| {
+                    const col_idx = table.findColumnIndex(col_name) orelse {
+                        values[ci] = .null_val;
+                        continue;
+                    };
+                    values[ci] = switch (row.values[col_idx]) {
+                        .text => |t| blk: {
+                            const d = dupeStr(self.allocator, t) catch break :blk Value.null_val;
+                            alloc_texts.append(self.allocator, d) catch {};
+                            break :blk Value{ .text = d };
+                        },
+                        else => row.values[col_idx],
+                    };
+                }
+            }
+            proj_values[ri] = values;
+            proj_rows[ri] = .{ .values = values };
+        }
+        self.projected_rows = proj_rows;
+        self.projected_values = proj_values;
+        if (alloc_texts.items.len > 0) {
+            self.projected_texts = alloc_texts.toOwnedSlice(self.allocator) catch null;
+        } else {
+            alloc_texts.deinit(self.allocator);
+        }
+        return .{ .rows = proj_rows };
+    }
+
     fn executeInsertSelect(self: *Database, table: *Table, select_sql: []const u8) !ExecuteResult {
         // Save and restore projected state
         const saved_rows = self.projected_rows;
@@ -4571,10 +4620,12 @@ pub const Database = struct {
                     }
                     self.allocator.free(oc.updates);
                 };
+                defer if (ins.returning) |ret| self.allocator.free(ret);
                 if (self.tables.getPtr(ins.table_name)) |table| {
                     if (ins.select_sql) |select_sql| {
                         return self.executeInsertSelect(table, select_sql);
                     }
+                    const initial_len = table.storage().len();
                     if (ins.default_values) {
                         // INSERT INTO t DEFAULT VALUES: use defaults for all columns
                         var def_values = try self.allocator.alloc([]const u8, table.columns.len);
@@ -4583,6 +4634,10 @@ pub const Database = struct {
                             def_values[i] = col.default_value orelse "NULL";
                         }
                         try table.insertRow(def_values);
+                        if (ins.returning) |ret| {
+                            const rows = table.storage().scan();
+                            return self.buildReturningResult(table, rows[initial_len..], ret);
+                        }
                         return .ok;
                     }
                     // Expand partial column lists with default values
@@ -4633,6 +4688,10 @@ pub const Database = struct {
                             try table.insertRow(expanded);
                         }
                     }
+                    if (ins.returning) |ret| {
+                        const rows = table.storage().scan();
+                        return self.buildReturningResult(table, rows[initial_len..], ret);
+                    }
                     return .ok;
                 }
                 return .{ .err = "table not found" };
@@ -4660,7 +4719,12 @@ pub const Database = struct {
             },
             .delete => |del| {
                 defer if (del.where_expr) |we| self.freeWhereExpr(we);
+                defer if (del.returning) |ret| self.allocator.free(ret);
                 if (self.tables.getPtr(del.table_name)) |table| {
+                    // For RETURNING, capture matching rows before deleting
+                    var captured_rows: std.ArrayList(Row) = .{};
+                    defer captured_rows.deinit(self.allocator);
+
                     if (del.where_expr) |we| {
                         var i: usize = table.storage().len();
                         while (i > 0) {
@@ -4669,7 +4733,11 @@ pub const Database = struct {
                             const val = try self.evalExpr(we, table, rows[i]);
                             defer if (val == .text) self.allocator.free(val.text);
                             if (self.valueToBool(val)) {
-                                table.freeRow(rows[i]);
+                                if (del.returning != null) {
+                                    captured_rows.append(self.allocator, rows[i]) catch {};
+                                } else {
+                                    table.freeRow(rows[i]);
+                                }
                                 _ = table.storage().orderedRemove(i);
                             }
                         }
@@ -4679,17 +4747,35 @@ pub const Database = struct {
                             i -= 1;
                             const rows = table.storage().scan();
                             if (table.matchesWhere(rows[i], where)) {
-                                table.freeRow(rows[i]);
+                                if (del.returning != null) {
+                                    captured_rows.append(self.allocator, rows[i]) catch {};
+                                } else {
+                                    table.freeRow(rows[i]);
+                                }
                                 _ = table.storage().orderedRemove(i);
                             }
                         }
                     } else {
                         // DELETE without WHERE: delete all rows
                         const rows = table.storage().scan();
-                        for (rows) |row| {
-                            table.freeRow(row);
+                        if (del.returning != null) {
+                            for (rows) |row| {
+                                captured_rows.append(self.allocator, row) catch {};
+                            }
+                        } else {
+                            for (rows) |row| {
+                                table.freeRow(row);
+                            }
                         }
                         table.storage().clearRetainingCapacity();
+                    }
+                    if (del.returning) |ret| {
+                        const result = try self.buildReturningResult(table, captured_rows.items, ret);
+                        // Now free the captured rows
+                        for (captured_rows.items) |row| {
+                            table.freeRow(row);
+                        }
+                        return result;
                     }
                     return .ok;
                 }
@@ -4703,6 +4789,7 @@ pub const Database = struct {
                     self.allocator.free(upd.set_exprs);
                 }
                 defer if (upd.where_expr) |we| self.freeWhereExpr(we);
+                defer if (upd.returning) |ret| self.allocator.free(ret);
                 if (self.tables.getPtr(upd.table_name)) |table| {
                     // Validate all columns exist
                     var col_indices: std.ArrayList(usize) = .{};
@@ -4714,7 +4801,11 @@ pub const Database = struct {
                         col_indices.append(self.allocator, idx) catch return .{ .err = "out of memory" };
                     }
 
-                    for (table.storage().scanMut()) |*row| {
+                    // Track updated row indices for RETURNING
+                    var updated_indices: std.ArrayList(usize) = .{};
+                    defer updated_indices.deinit(self.allocator);
+
+                    for (table.storage().scanMut(), 0..) |*row, row_idx| {
                         const matches = if (upd.where_expr) |we| blk: {
                             const val = try self.evalExpr(we, table, row.*);
                             defer if (val == .text) self.allocator.free(val.text);
@@ -4750,7 +4841,19 @@ pub const Database = struct {
                                     }
                                 }
                             }
+                            if (upd.returning != null) {
+                                updated_indices.append(self.allocator, row_idx) catch {};
+                            }
                         }
+                    }
+                    if (upd.returning) |ret| {
+                        const all_rows = table.storage().scan();
+                        var updated_rows = try self.allocator.alloc(Row, updated_indices.items.len);
+                        defer self.allocator.free(updated_rows);
+                        for (updated_indices.items, 0..) |idx, i| {
+                            updated_rows[i] = all_rows[idx];
+                        }
+                        return self.buildReturningResult(table, updated_rows, ret);
                     }
                     return .ok;
                 }

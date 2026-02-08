@@ -347,6 +347,7 @@ pub const Statement = union(enum) {
         column_names: []const []const u8 = &.{}, // explicit column list (empty = all)
         on_conflict: ?OnConflict = null, // ON CONFLICT clause (UPSERT)
         default_values: bool = false, // INSERT INTO t DEFAULT VALUES
+        returning: ?[]const []const u8 = null, // RETURNING clause columns (* = all)
     };
 
     pub const Select = struct {
@@ -381,6 +382,7 @@ pub const Statement = union(enum) {
         table_name: []const u8,
         where: ?WhereClause,
         where_expr: ?*const Expr = null,
+        returning: ?[]const []const u8 = null,
     };
 
     pub const Update = struct {
@@ -390,6 +392,7 @@ pub const Statement = union(enum) {
         set_exprs: []const *const Expr = &.{}, // expression ASTs for SET values
         where: ?WhereClause,
         where_expr: ?*const Expr = null,
+        returning: ?[]const []const u8 = null,
     };
 
     pub const DropTable = struct {
@@ -510,6 +513,26 @@ pub const Parser = struct {
             .kw_total, .kw_text, .kw_integer, .kw_real, .kw_replace, .kw_like, .kw_glob, .kw_key => true,
             else => false,
         };
+    }
+
+    /// Parse optional RETURNING clause: RETURNING * | col1, col2, ...
+    fn parseReturning(self: *Parser) ParseError!?[]const []const u8 {
+        if (!isIdentEql(self.peek(), "RETURNING")) return null;
+        _ = self.advance(); // consume RETURNING
+        var cols: std.ArrayList([]const u8) = .{};
+        if (self.peek().type == .star) {
+            _ = self.advance();
+            cols.append(self.allocator, "*") catch return ParseError.OutOfMemory;
+        } else {
+            while (true) {
+                const col_tok = self.advance();
+                cols.append(self.allocator, col_tok.lexeme) catch return ParseError.OutOfMemory;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                } else break;
+            }
+        }
+        return cols.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
     }
 
     fn expectAlias(self: *Parser) ParseError!Token {
@@ -942,6 +965,8 @@ pub const Parser = struct {
             }
         }
 
+        const returning = try self.parseReturning();
+
         _ = try self.expect(.semicolon);
 
         return Statement{
@@ -953,6 +978,7 @@ pub const Parser = struct {
                 .ignore_mode = ignore_mode,
                 .column_names = col_names.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
                 .on_conflict = on_conflict,
+                .returning = returning,
             },
         };
     }
@@ -2419,12 +2445,14 @@ pub const Parser = struct {
             _ = self.advance(); // consume WHERE
             where_expr = try self.parseWhereExpr();
         }
+        const returning = try self.parseReturning();
         _ = try self.expect(.semicolon);
 
         return Statement{ .delete = .{
             .table_name = name_tok.lexeme,
             .where = null,
             .where_expr = where_expr,
+            .returning = returning,
         } };
     }
 
@@ -2456,6 +2484,7 @@ pub const Parser = struct {
             _ = self.advance(); // consume WHERE
             where_expr = try self.parseWhereExpr();
         }
+        const returning = try self.parseReturning();
         _ = try self.expect(.semicolon);
 
         return Statement{ .update = .{
@@ -2465,6 +2494,7 @@ pub const Parser = struct {
             .set_exprs = set_exprs.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
             .where = null,
             .where_expr = where_expr,
+            .returning = returning,
         } };
     }
 

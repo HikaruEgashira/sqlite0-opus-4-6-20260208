@@ -1,0 +1,26 @@
+-- RETURNING clause for INSERT, UPDATE, DELETE
+CREATE TABLE t1 (id INTEGER PRIMARY KEY, name TEXT, value INTEGER);
+
+-- INSERT RETURNING *
+INSERT INTO t1 VALUES (1, 'Alice', 100) RETURNING *;
+
+-- INSERT RETURNING specific columns
+INSERT INTO t1 VALUES (2, 'Bob', 200) RETURNING id, name;
+
+-- Multi-row INSERT RETURNING *
+INSERT INTO t1 VALUES (3, 'Carol', 300), (4, 'Dave', 400) RETURNING *;
+
+-- UPDATE RETURNING *
+UPDATE t1 SET value = value + 50 WHERE id = 1 RETURNING *;
+
+-- UPDATE RETURNING specific columns
+UPDATE t1 SET name = 'Bobby' WHERE id = 2 RETURNING id, name;
+
+-- DELETE RETURNING *
+DELETE FROM t1 WHERE id = 4 RETURNING *;
+
+-- DELETE RETURNING specific columns
+DELETE FROM t1 WHERE id = 3 RETURNING id, name;
+
+-- Verify remaining rows
+SELECT * FROM t1 ORDER BY id;
