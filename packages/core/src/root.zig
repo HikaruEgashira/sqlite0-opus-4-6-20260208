@@ -19,6 +19,7 @@ pub const WhereCondition = parser.WhereCondition;
 pub const LogicOp = parser.LogicOp;
 pub const CompOp = parser.CompOp;
 pub const OrderByClause = parser.OrderByClause;
+pub const OrderByItem = parser.OrderByItem;
 pub const SortOrder = parser.SortOrder;
 pub const SelectExpr = parser.SelectExpr;
 pub const AggFunc = parser.AggFunc;
@@ -929,26 +930,9 @@ pub const Database = struct {
                 return self.executeAggregate(&table, sel, matching_rows.items);
             }
 
-            // Apply ORDER BY
+            // Apply ORDER BY (multi-column)
             if (sel.order_by) |order_by| {
-                const sort_col_idx = table.findColumnIndex(order_by.column) orelse {
-                    return .{ .err = "column not found" };
-                };
-                const desc = order_by.order == .desc;
-                const SortCtx = struct {
-                    sort_col_idx: usize,
-                    is_desc: bool,
-                    fn lessThan(ctx: @This(), a: Row, b: Row) bool {
-                        const va = a.values[ctx.sort_col_idx];
-                        const vb = b.values[ctx.sort_col_idx];
-                        const cmp = compareValuesOrder(va, vb);
-                        if (ctx.is_desc) {
-                            return cmp == .gt;
-                        }
-                        return cmp == .lt;
-                    }
-                };
-                std.mem.sort(Row, matching_rows.items, SortCtx{ .sort_col_idx = sort_col_idx, .is_desc = desc }, SortCtx.lessThan);
+                try self.sortRowsByOrderBy(&table, matching_rows.items, order_by.items);
             }
 
             // Apply DISTINCT (remove duplicate rows)
@@ -1607,6 +1591,41 @@ pub const Database = struct {
         };
     }
 
+    /// Sort rows by multiple ORDER BY columns
+    fn sortRowsByOrderBy(self: *Database, tbl: *const Table, rows: []Row, items: []const OrderByItem) !void {
+        if (items.len == 0) return;
+
+        // Resolve column indices
+        var col_indices = try self.allocator.alloc(usize, items.len);
+        defer self.allocator.free(col_indices);
+        var desc_flags = try self.allocator.alloc(bool, items.len);
+        defer self.allocator.free(desc_flags);
+
+        for (items, 0..) |item, i| {
+            col_indices[i] = tbl.findColumnIndex(item.column) orelse return;
+            desc_flags[i] = item.order == .desc;
+        }
+
+        const MultiSortCtx = struct {
+            indices: []const usize,
+            descs: []const bool,
+
+            fn lessThan(ctx: @This(), a: Row, b: Row) bool {
+                for (ctx.indices, ctx.descs) |col_idx, is_desc| {
+                    const va = a.values[col_idx];
+                    const vb = b.values[col_idx];
+                    const cmp = compareValuesOrder(va, vb);
+                    if (cmp == .eq) continue;
+                    if (is_desc) return cmp == .gt;
+                    return cmp == .lt;
+                }
+                return false; // all equal
+            }
+        };
+
+        std.mem.sort(Row, rows, MultiSortCtx{ .indices = col_indices, .descs = desc_flags }, MultiSortCtx.lessThan);
+    }
+
     fn rowComparator(_: OrderByClause, row1: Row, row2: Row) bool {
         // Placeholder: compare first column for now
         if (row1.values.len == 0 or row2.values.len == 0) return false;
@@ -1753,6 +1772,7 @@ pub const Database = struct {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
                 defer self.allocator.free(sel.aliases);
+                defer if (sel.order_by) |ob| self.allocator.free(ob.items);
                 defer {
                     for (sel.result_exprs) |e| self.freeExprDeep(e);
                     self.allocator.free(sel.result_exprs);
@@ -1921,6 +1941,7 @@ pub const Database = struct {
                     }
                     self.allocator.free(union_sel.selects);
                 }
+                defer if (union_sel.order_by) |ob| self.allocator.free(ob.items);
                 return self.executeUnion(union_sel);
             },
         }

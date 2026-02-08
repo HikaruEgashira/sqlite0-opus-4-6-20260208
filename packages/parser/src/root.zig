@@ -16,9 +16,15 @@ pub const SortOrder = enum {
     desc,
 };
 
-pub const OrderByClause = struct {
+pub const OrderByItem = struct {
     column: []const u8,
     order: SortOrder,
+};
+
+pub const OrderByClause = struct {
+    column: []const u8, // first column (backward compat)
+    order: SortOrder, // first column order (backward compat)
+    items: []const OrderByItem, // all columns (including first)
 };
 
 pub const CompOp = enum {
@@ -759,18 +765,33 @@ pub const Parser = struct {
     fn parseOrderByClause(self: *Parser) ParseError!OrderByClause {
         _ = try self.expect(.kw_order);
         _ = try self.expect(.kw_by);
-        const col_tok = try self.expect(.identifier);
-        var order: SortOrder = .asc;
-        if (self.peek().type == .kw_asc) {
-            _ = self.advance();
-            order = .asc;
-        } else if (self.peek().type == .kw_desc) {
-            _ = self.advance();
-            order = .desc;
+
+        var items: std.ArrayList(OrderByItem) = .{};
+
+        while (true) {
+            const col_tok = try self.expect(.identifier);
+            var order: SortOrder = .asc;
+            if (self.peek().type == .kw_asc) {
+                _ = self.advance();
+                order = .asc;
+            } else if (self.peek().type == .kw_desc) {
+                _ = self.advance();
+                order = .desc;
+            }
+            items.append(self.allocator, .{ .column = col_tok.lexeme, .order = order }) catch return ParseError.OutOfMemory;
+
+            if (self.peek().type == .comma) {
+                _ = self.advance();
+            } else {
+                break;
+            }
         }
+
+        const first = items.items[0];
         return .{
-            .column = col_tok.lexeme,
-            .order = order,
+            .column = first.column,
+            .order = first.order,
+            .items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
         };
     }
 
@@ -1765,6 +1786,7 @@ test "parse SELECT with ORDER BY" {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.result_exprs);
             defer allocator.free(sel.aliases);
+            defer if (sel.order_by) |ob| allocator.free(ob.items);
             try std.testing.expectEqualStrings("users", sel.table_name);
             try std.testing.expect(sel.order_by != null);
             try std.testing.expectEqualStrings("name", sel.order_by.?.column);
