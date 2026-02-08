@@ -4411,11 +4411,47 @@ pub const Database = struct {
 
         // SELECT * for JOIN
         if (sel.columns.len == 0 and sel.select_exprs.len == 0) {
-            const proj_rows = try self.allocator.alloc(Row, result_rows.len);
-            @memcpy(proj_rows, result_rows);
+            // Apply DISTINCT
+            if (sel.distinct) {
+                var write_idx: usize = 0;
+                for (joined_rows.items, 0..) |row, ri| {
+                    var is_dup = false;
+                    for (joined_rows.items[0..write_idx]) |prev| {
+                        if (rowsEqual(row, prev)) {
+                            is_dup = true;
+                            break;
+                        }
+                    }
+                    if (!is_dup) {
+                        joined_rows.items[write_idx] = joined_rows.items[ri];
+                        joined_values.items[write_idx] = joined_values.items[ri];
+                        write_idx += 1;
+                    } else {
+                        self.allocator.free(joined_values.items[ri]);
+                    }
+                }
+                joined_rows.shrinkRetainingCapacity(write_idx);
+                joined_values.shrinkRetainingCapacity(write_idx);
+            }
+            // Apply LIMIT/OFFSET
+            const total_j = joined_rows.items.len;
+            var j_start: usize = 0;
+            var j_end: usize = total_j;
+            if (sel.offset) |off| {
+                if (off > 0) j_start = @min(@as(usize, @intCast(off)), total_j);
+            }
+            if (sel.limit) |lim| {
+                if (lim >= 0) j_end = @min(j_start + @as(usize, @intCast(lim)), total_j);
+            }
+            for (0..j_start) |i| self.allocator.free(joined_values.items[i]);
+            for (j_end..total_j) |i| self.allocator.free(joined_values.items[i]);
+            const lim_rows = joined_rows.items[j_start..j_end];
+            const lim_vals = joined_values.items[j_start..j_end];
+            const proj_rows = try self.allocator.alloc(Row, lim_rows.len);
+            @memcpy(proj_rows, lim_rows);
             self.projected_rows = proj_rows;
-            const pv = try self.allocator.alloc([]Value, joined_values.items.len);
-            @memcpy(pv, joined_values.items);
+            const pv = try self.allocator.alloc([]Value, lim_vals.len);
+            @memcpy(pv, lim_vals);
             self.projected_values = pv;
             joined_rows.deinit(self.allocator);
             joined_values.deinit(self.allocator);
@@ -4477,6 +4513,54 @@ pub const Database = struct {
         for (joined_values.items) |v| self.allocator.free(v);
         joined_values.deinit(self.allocator);
         joined_rows.deinit(self.allocator);
+
+        // Apply DISTINCT on projected rows
+        if (sel.distinct and row_count > 0) {
+            var write_idx: usize = 0;
+            for (0..row_count) |ri| {
+                var is_dup = false;
+                for (0..write_idx) |pi| {
+                    if (rowsEqual(proj_rows[pi], proj_rows[ri])) {
+                        is_dup = true;
+                        break;
+                    }
+                }
+                if (!is_dup) {
+                    proj_rows[write_idx] = proj_rows[ri];
+                    proj_values[write_idx] = proj_values[ri];
+                    write_idx += 1;
+                } else {
+                    self.allocator.free(proj_values[ri]);
+                }
+            }
+            proj_rows = self.allocator.realloc(proj_rows, write_idx) catch proj_rows;
+            proj_values = self.allocator.realloc(proj_values, write_idx) catch proj_values;
+        }
+
+        // Apply LIMIT/OFFSET on projected rows
+        const total_proj = proj_rows.len;
+        var p_start: usize = 0;
+        var p_end: usize = total_proj;
+        if (sel.offset) |off| {
+            if (off > 0) p_start = @min(@as(usize, @intCast(off)), total_proj);
+        }
+        if (sel.limit) |lim| {
+            if (lim >= 0) p_end = @min(p_start + @as(usize, @intCast(lim)), total_proj);
+        }
+        if (p_start > 0 or p_end < total_proj) {
+            // Free trimmed rows
+            for (0..p_start) |i| self.allocator.free(proj_values[i]);
+            for (p_end..total_proj) |i| self.allocator.free(proj_values[i]);
+            const kept_count = p_end - p_start;
+            const new_proj_rows = try self.allocator.alloc(Row, kept_count);
+            const new_proj_values = try self.allocator.alloc([]Value, kept_count);
+            @memcpy(new_proj_rows, proj_rows[p_start..p_end]);
+            @memcpy(new_proj_values, proj_values[p_start..p_end]);
+            self.allocator.free(proj_rows);
+            self.allocator.free(proj_values);
+            proj_rows = new_proj_rows;
+            proj_values = new_proj_values;
+        }
 
         self.projected_rows = proj_rows;
         self.projected_values = proj_values;
