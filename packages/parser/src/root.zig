@@ -117,6 +117,8 @@ pub const ScalarFunc = enum {
     char_fn,
     zeroblob,
     printf_fn,
+    ltrim,
+    rtrim,
 };
 
 pub const Expr = union(enum) {
@@ -1498,6 +1500,8 @@ pub const Parser = struct {
             .{ "CHAR", ScalarFunc.char_fn },
             .{ "ZEROBLOB", ScalarFunc.zeroblob },
             .{ "PRINTF", ScalarFunc.printf_fn },
+            .{ "LTRIM", ScalarFunc.ltrim },
+            .{ "RTRIM", ScalarFunc.rtrim },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {

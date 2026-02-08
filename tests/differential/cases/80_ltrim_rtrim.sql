@@ -1,0 +1,20 @@
+CREATE TABLE t1 (id INTEGER, val TEXT);
+INSERT INTO t1 VALUES (1, '  hello  ');
+INSERT INTO t1 VALUES (2, 'world  ');
+INSERT INTO t1 VALUES (3, '  test');
+INSERT INTO t1 VALUES (4, 'nopad');
+
+-- LTRIM
+SELECT id, LTRIM(val) FROM t1 ORDER BY id;
+
+-- RTRIM
+SELECT id, RTRIM(val) FROM t1 ORDER BY id;
+
+-- TRIM (both sides)
+SELECT id, TRIM(val) FROM t1 ORDER BY id;
+
+-- LTRIM + RTRIM combined
+SELECT id, RTRIM(LTRIM(val)) FROM t1 ORDER BY id;
+
+-- LTRIM/RTRIM with LENGTH
+SELECT id, LENGTH(LTRIM(val)), LENGTH(RTRIM(val)) FROM t1 ORDER BY id;

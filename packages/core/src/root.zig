@@ -717,6 +717,24 @@ pub const Database = struct {
                 if (val == .null_val) return .null_val;
                 return .{ .text = self.valueToText(val) };
             },
+            .ltrim => {
+                if (args.len == 0) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                if (val != .text) return val;
+                defer self.allocator.free(val.text);
+                const trimmed = std.mem.trimLeft(u8, val.text, " ");
+                return .{ .text = try dupeStr(self.allocator, trimmed) };
+            },
+            .rtrim => {
+                if (args.len == 0) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                if (val == .null_val) return .null_val;
+                if (val != .text) return val;
+                defer self.allocator.free(val.text);
+                const trimmed = std.mem.trimRight(u8, val.text, " ");
+                return .{ .text = try dupeStr(self.allocator, trimmed) };
+            },
         }
     }
 
