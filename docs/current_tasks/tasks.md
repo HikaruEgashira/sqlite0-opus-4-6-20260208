@@ -88,6 +88,19 @@
 - [x] NULLS FIRST/LAST in ORDER BY
 - Differential Test: **113/113 passing**
 
+### Phase 6d-11: SQL機能充実（完了）
+- [x] Window集約関数（SUM/AVG/COUNT/MIN/MAX/TOTAL OVER）
+- [x] PARTITION BY テスト追加
+- [x] LIKE() / GLOB() スカラー関数
+- [x] LAG / LEAD Window関数
+- [x] NTILE Window関数
+- [x] FIRST_VALUE / LAST_VALUE Window関数
+- [x] クォート識別子（"name", `name`）
+- [x] WITH RECURSIVE（再帰CTE）
+- [x] || 連結演算子テスト追加
+- [x] IS NULL / IS NOT NULL テスト追加
+- Differential Test: **123/123 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）

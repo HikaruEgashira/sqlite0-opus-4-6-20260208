@@ -67,14 +67,18 @@
 - ~~CREATE TABLE AS SELECT~~ ✓
 - ~~<>演算子~~ ✓
 - 外部キー (FOREIGN KEY)
-- PARTITION BY (Window関数)
-- SUM/AVG OVER (Window集約)
+- ~~PARTITION BY (Window関数)~~ ✓
+- ~~SUM/AVG OVER (Window集約)~~ ✓
 - GENERATED COLUMNS
 - ~~UPSERT (ON CONFLICT)~~ ✓
 - ~~Common Table Expressions (WITH/CTE)~~ ✓
 - ~~INSERT INTO ... DEFAULT VALUES~~ ✓
 - ~~NULLS FIRST/LAST in ORDER BY~~ ✓
 - ~~Simple CASE expression~~ ✓
+- ~~LAG/LEAD/NTILE/FIRST_VALUE/LAST_VALUE Window関数~~ ✓
+- ~~LIKE()/GLOB() スカラー関数~~ ✓
+- ~~クォート識別子 ("name", `name`)~~ ✓
+- ~~WITH RECURSIVE（再帰CTE）~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d
