@@ -24,10 +24,15 @@ packages/tokenizer/src/   # Lexical analysis (TokenType, Tokenizer)
 packages/parser/src/      # SQL parsing (Statement, Expr, Parser)
 packages/core/src/        # Database engine (Database, Table, Value)
 tests/differential/       # run.sh + cases/*.sql (SQLite3 comparison)
-docs/adr/                 # Architecture Decision Records
-docs/memory/              # Implementation notes
-docs/current_tasks/       # Active task tracking
-docs/ideas/               # Feature backlog
+```
+
+```
+docs/ideas ... ここに開発アイデアを追加してください。定期的にリファインメントする。
+docs/current_tasks ... ここで現在のタスクを管理してください。完了したタスクは削除する。
+docs/adr ... Architectural Decision Recordsをここに保存する。ストック情報になるように継続的に更新する。フロー情報はmemoryに保存する。
+docs/memory ... 開発中に得た知見やノウハウを蓄積していく場所です。
+app ... 実行可能なパッケージ
+packages ... ライブラリパッケージ
 ```
 
 Module dependency: `app -> core -> parser -> tokenizer`
