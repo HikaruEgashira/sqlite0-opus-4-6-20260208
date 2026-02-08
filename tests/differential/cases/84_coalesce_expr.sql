@@ -1,0 +1,20 @@
+CREATE TABLE t1 (id INTEGER, a INTEGER, b INTEGER, c TEXT);
+INSERT INTO t1 VALUES (1, NULL, NULL, NULL);
+INSERT INTO t1 VALUES (2, NULL, 20, 'hello');
+INSERT INTO t1 VALUES (3, 10, NULL, 'world');
+INSERT INTO t1 VALUES (4, NULL, NULL, 'test');
+
+-- COALESCE with expressions
+SELECT id, COALESCE(a + 1, b * 2, 0) FROM t1 ORDER BY id;
+
+-- Nested COALESCE
+SELECT id, COALESCE(COALESCE(a, b), 99) FROM t1 ORDER BY id;
+
+-- COALESCE in WHERE
+SELECT id FROM t1 WHERE COALESCE(a, b, 0) > 0 ORDER BY id;
+
+-- COALESCE with multiple NULLs
+SELECT COALESCE(NULL, NULL, NULL, 'found');
+
+-- COALESCE with string expressions
+SELECT id, COALESCE(c, 'N/A') FROM t1 ORDER BY id;
