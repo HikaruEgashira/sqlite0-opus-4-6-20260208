@@ -165,6 +165,10 @@ pub const ScalarFunc = enum {
     tan_fn,
     pi_fn,
     mod_fn,
+    quote_fn,
+    last_insert_rowid_fn,
+    changes_fn,
+    total_changes_fn,
 };
 
 pub const Expr = union(enum) {
@@ -2288,6 +2292,10 @@ pub const Parser = struct {
             .{ "TAN", ScalarFunc.tan_fn },
             .{ "PI", ScalarFunc.pi_fn },
             .{ "MOD", ScalarFunc.mod_fn },
+            .{ "QUOTE", ScalarFunc.quote_fn },
+            .{ "LAST_INSERT_ROWID", ScalarFunc.last_insert_rowid_fn },
+            .{ "CHANGES", ScalarFunc.changes_fn },
+            .{ "TOTAL_CHANGES", ScalarFunc.total_changes_fn },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {

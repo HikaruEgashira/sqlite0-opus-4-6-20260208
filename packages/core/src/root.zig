@@ -80,6 +80,10 @@ pub const Database = struct {
     current_table_alias: ?[]const u8 = null,
     // JOIN alias offsets for resolving qualified aggregate column refs
     join_alias_offsets: ?[]const AliasOffset = null,
+    // Last insert rowid and change counters
+    last_insert_rowid: i64 = 0,
+    last_changes: i64 = 0,
+    total_changes_count: i64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) Database {
         return .{
@@ -375,6 +379,14 @@ pub const Database = struct {
         return modify_mod.buildReturningResult(self, table, src_rows, returning_cols);
     }
 
+    pub fn trackInsertChanges(self: *Database, table: *const Table, initial_len: usize) void {
+        const new_len = table.storage().len();
+        const changes = @as(i64, @intCast(new_len)) - @as(i64, @intCast(initial_len));
+        self.last_changes = changes;
+        self.total_changes_count += changes;
+        if (changes > 0) self.last_insert_rowid = table.next_rowid - 1;
+    }
+
     pub fn executeInsertSelect(self: *Database, table: *Table, select_sql: []const u8) !ExecuteResult {
         return modify_mod.executeInsertSelect(self, table, select_sql);
     }
@@ -569,6 +581,7 @@ pub const Database = struct {
                             def_values[i] = col.default_value orelse "NULL";
                         }
                         try table.insertRow(def_values);
+                        self.trackInsertChanges(table, initial_len);
                         if (ins.returning) |ret| {
                             const rows = table.storage().scan();
                             return self.buildReturningResult(table, rows[initial_len..], ret);
@@ -633,6 +646,7 @@ pub const Database = struct {
                                 try table.insertRow(row_values);
                             }
                         }
+                        self.trackInsertChanges(table, initial_len);
                         if (ins.returning) |ret| {
                             const rows = table.storage().scan();
                             return self.buildReturningResult(table, rows[initial_len..], ret);
@@ -689,6 +703,7 @@ pub const Database = struct {
                             try table.insertRow(expanded);
                         }
                     }
+                    self.trackInsertChanges(table, initial_len);
                     if (ins.returning) |ret| {
                         const rows = table.storage().scan();
                         return self.buildReturningResult(table, rows[initial_len..], ret);
@@ -722,6 +737,7 @@ pub const Database = struct {
                 defer if (del.where_expr) |we| self.freeWhereExpr(we);
                 defer if (del.returning) |ret| self.allocator.free(ret);
                 if (self.tables.getPtr(del.table_name)) |table| {
+                    const pre_len = table.storage().len();
                     // For RETURNING, capture matching rows before deleting
                     var captured_rows: std.ArrayList(Row) = .{};
                     defer captured_rows.deinit(self.allocator);
@@ -770,6 +786,10 @@ pub const Database = struct {
                         }
                         table.storage().clearRetainingCapacity();
                     }
+                    const post_len = table.storage().len();
+                    const del_changes = @as(i64, @intCast(pre_len)) - @as(i64, @intCast(post_len));
+                    self.last_changes = del_changes;
+                    self.total_changes_count += del_changes;
                     if (del.returning) |ret| {
                         const result = try self.buildReturningResult(table, captured_rows.items, ret);
                         // Now free the captured rows
@@ -842,11 +862,11 @@ pub const Database = struct {
                                     }
                                 }
                             }
-                            if (upd.returning != null) {
-                                updated_indices.append(self.allocator, row_idx) catch {};
-                            }
+                            updated_indices.append(self.allocator, row_idx) catch {};
                         }
                     }
+                    self.last_changes = @intCast(updated_indices.items.len);
+                    self.total_changes_count += @intCast(updated_indices.items.len);
                     if (upd.returning) |ret| {
                         const all_rows = table.storage().scan();
                         var updated_rows = try self.allocator.alloc(Row, updated_indices.items.len);

@@ -1,0 +1,18 @@
+CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);
+INSERT INTO t VALUES (1, 'alice');
+SELECT last_insert_rowid();
+SELECT changes();
+INSERT INTO t VALUES (5, 'bob');
+SELECT last_insert_rowid();
+INSERT INTO t VALUES (10, 'charlie'), (11, 'dave');
+SELECT last_insert_rowid();
+SELECT changes();
+SELECT total_changes();
+DELETE FROM t WHERE id > 5;
+SELECT changes();
+SELECT total_changes();
+UPDATE t SET name = 'ALICE' WHERE id = 1;
+SELECT changes();
+UPDATE t SET name = upper(name);
+SELECT changes();
+SELECT total_changes();

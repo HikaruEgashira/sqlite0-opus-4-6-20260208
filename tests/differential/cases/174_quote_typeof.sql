@@ -1,0 +1,13 @@
+SELECT quote('hello');
+SELECT quote(42);
+SELECT quote(NULL);
+SELECT typeof(1);
+SELECT typeof('hello');
+SELECT typeof(NULL);
+SELECT typeof(1.5);
+SELECT typeof(1.0 + 2.0);
+CREATE TABLE t (a INTEGER, b TEXT, c REAL);
+INSERT INTO t VALUES (1, 'hello', 3.14);
+INSERT INTO t VALUES (NULL, NULL, NULL);
+SELECT typeof(a), typeof(b), typeof(c) FROM t;
+SELECT quote(a), quote(b) FROM t;

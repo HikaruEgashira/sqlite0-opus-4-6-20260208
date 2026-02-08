@@ -606,10 +606,54 @@ pub fn evalScalarFunc(self: *Database, func: ScalarFunc, args: []const *const Ex
             defer if (val == .text) self.allocator.free(val.text);
             const type_name: []const u8 = switch (val) {
                 .integer => "integer",
-                .text => "text",
+                .text => |t| blk: {
+                    // Check if it looks like a real number (contains decimal point)
+                    if (std.mem.indexOfScalar(u8, t, '.') != null) {
+                        if (std.fmt.parseFloat(f64, t) catch null) |_| {
+                            break :blk "real";
+                        }
+                    }
+                    break :blk "text";
+                },
                 .null_val => "null",
             };
             return .{ .text = try dupeStr(self.allocator, type_name) };
+        },
+        .quote_fn => {
+            if (args.len != 1) return .null_val;
+            const val = try evalExpr(self, args[0], tbl, row);
+            switch (val) {
+                .null_val => return .{ .text = try dupeStr(self.allocator, "NULL") },
+                .integer => |n| {
+                    var buf: [32]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return .null_val;
+                    return .{ .text = try dupeStr(self.allocator, s) };
+                },
+                .text => |t| {
+                    // Wrap in single quotes, escaping internal single quotes
+                    var result: std.ArrayList(u8) = .{};
+                    result.append(self.allocator, '\'') catch return .null_val;
+                    for (t) |c| {
+                        if (c == '\'') {
+                            result.appendSlice(self.allocator, "''") catch return .null_val;
+                        } else {
+                            result.append(self.allocator, c) catch return .null_val;
+                        }
+                    }
+                    result.append(self.allocator, '\'') catch return .null_val;
+                    self.allocator.free(t);
+                    return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+                },
+            }
+        },
+        .last_insert_rowid_fn => {
+            return .{ .integer = self.last_insert_rowid };
+        },
+        .changes_fn => {
+            return .{ .integer = self.last_changes };
+        },
+        .total_changes_fn => {
+            return .{ .integer = self.total_changes_count };
         },
         .coalesce => {
             for (args) |arg| {
@@ -1167,6 +1211,15 @@ pub fn evalScalarFuncValues(self: *Database, func: ScalarFunc, vals: []const Val
             self.allocator.free(text);
             return .{ .text = buf };
         },
+        .last_insert_rowid_fn => {
+            return .{ .integer = self.last_insert_rowid };
+        },
+        .changes_fn => {
+            return .{ .integer = self.last_changes };
+        },
+        .total_changes_fn => {
+            return .{ .integer = self.total_changes_count };
+        },
         .coalesce => {
             for (vals) |val| {
                 if (val != .null_val) {
@@ -1199,10 +1252,41 @@ pub fn evalScalarFuncValues(self: *Database, func: ScalarFunc, vals: []const Val
             if (vals.len != 1) return .null_val;
             const type_name: []const u8 = switch (vals[0]) {
                 .integer => "integer",
-                .text => "text",
+                .text => |t| blk: {
+                    if (std.mem.indexOfScalar(u8, t, '.') != null) {
+                        if (std.fmt.parseFloat(f64, t) catch null) |_| {
+                            break :blk "real";
+                        }
+                    }
+                    break :blk "text";
+                },
                 .null_val => "null",
             };
             return .{ .text = try dupeStr(self.allocator, type_name) };
+        },
+        .quote_fn => {
+            if (vals.len != 1) return .null_val;
+            switch (vals[0]) {
+                .null_val => return .{ .text = try dupeStr(self.allocator, "NULL") },
+                .integer => |n| {
+                    var buf: [32]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return .null_val;
+                    return .{ .text = try dupeStr(self.allocator, s) };
+                },
+                .text => |t| {
+                    var result: std.ArrayList(u8) = .{};
+                    result.append(self.allocator, '\'') catch return .null_val;
+                    for (t) |c| {
+                        if (c == '\'') {
+                            result.appendSlice(self.allocator, "''") catch return .null_val;
+                        } else {
+                            result.append(self.allocator, c) catch return .null_val;
+                        }
+                    }
+                    result.append(self.allocator, '\'') catch return .null_val;
+                    return .{ .text = result.toOwnedSlice(self.allocator) catch return .null_val };
+                },
+            }
         },
         .sign => {
             if (vals.len != 1) return .null_val;
