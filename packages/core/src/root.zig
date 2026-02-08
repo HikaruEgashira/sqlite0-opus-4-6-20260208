@@ -369,6 +369,18 @@ pub const Database = struct {
                 }
                 return .{ .integer = 0 };
             },
+            .in_values => |iv| {
+                const operand_val = try self.evalExpr(iv.operand, tbl, row);
+                defer if (operand_val == .text) self.allocator.free(operand_val.text);
+                if (operand_val == .null_val) return .null_val;
+
+                for (iv.values) |val_expr| {
+                    const val = try self.evalExpr(val_expr, tbl, row);
+                    defer if (val == .text) self.allocator.free(val.text);
+                    if (self.valuesEqualUnion(operand_val, val)) return .{ .integer = 1 };
+                }
+                return .{ .integer = 0 };
+            },
             .scalar_subquery => |sq| {
                 const sub_values = try self.executeSubquery(sq.subquery_sql);
                 defer if (sub_values) |sv| {
@@ -789,6 +801,11 @@ pub const Database = struct {
             .in_list => |il| {
                 self.freeExprDeep(il.operand);
                 self.allocator.free(@constCast(il.subquery_sql));
+            },
+            .in_values => |iv| {
+                self.freeExprDeep(iv.operand);
+                for (iv.values) |v| self.freeExprDeep(v);
+                self.allocator.free(iv.values);
             },
             .scalar_subquery => |sq| {
                 self.allocator.free(@constCast(sq.subquery_sql));

@@ -148,6 +148,10 @@ pub const Expr = union(enum) {
         operand: *const Expr,
         subquery_sql: []const u8, // SQL text for IN (SELECT ...)
     },
+    in_values: struct {
+        operand: *const Expr,
+        values: []const *const Expr, // IN (val1, val2, ...)
+    },
     scalar_subquery: struct {
         subquery_sql: []const u8, // SQL text for (SELECT ...)
     },
@@ -961,8 +965,27 @@ pub const Parser = struct {
                         } else if (self.peek().type == .kw_in) {
                             _ = self.advance();
                             _ = try self.expect(.lparen);
-                            const sql = try self.extractSubquerySQL();
-                            const in_expr = try self.allocExpr(.{ .in_list = .{ .operand = left, .subquery_sql = sql } });
+                            var in_expr: *const Expr = undefined;
+                            if (self.peek().type == .kw_select) {
+                                const sql = try self.extractSubquerySQL();
+                                in_expr = try self.allocExpr(.{ .in_list = .{ .operand = left, .subquery_sql = sql } });
+                            } else {
+                                var vals: std.ArrayList(*const Expr) = .{};
+                                while (true) {
+                                    const val_expr = try self.parseExpr();
+                                    vals.append(self.allocator, val_expr) catch return ParseError.OutOfMemory;
+                                    if (self.peek().type == .comma) {
+                                        _ = self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                _ = try self.expect(.rparen);
+                                in_expr = try self.allocExpr(.{ .in_values = .{
+                                    .operand = left,
+                                    .values = vals.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                                } });
+                            }
                             left = try self.allocExpr(.{ .unary_op = .{ .op = .not, .operand = in_expr } });
                             continue;
                         } else {
@@ -990,12 +1013,31 @@ pub const Parser = struct {
                 continue;
             }
 
-            // IN (SELECT ...)
+            // IN (SELECT ...) or IN (val1, val2, ...)
             if (self.peek().type == .kw_in) {
                 _ = self.advance();
                 _ = try self.expect(.lparen);
-                const sql = try self.extractSubquerySQL();
-                left = try self.allocExpr(.{ .in_list = .{ .operand = left, .subquery_sql = sql } });
+                if (self.peek().type == .kw_select) {
+                    const sql = try self.extractSubquerySQL();
+                    left = try self.allocExpr(.{ .in_list = .{ .operand = left, .subquery_sql = sql } });
+                } else {
+                    // Parse value list
+                    var vals: std.ArrayList(*const Expr) = .{};
+                    while (true) {
+                        const val_expr = try self.parseExpr();
+                        vals.append(self.allocator, val_expr) catch return ParseError.OutOfMemory;
+                        if (self.peek().type == .comma) {
+                            _ = self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    _ = try self.expect(.rparen);
+                    left = try self.allocExpr(.{ .in_values = .{
+                        .operand = left,
+                        .values = vals.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                    } });
+                }
                 continue;
             }
 
@@ -1330,6 +1372,11 @@ pub const Parser = struct {
             },
             .in_list => |il| {
                 freeExpr(allocator, il.operand);
+            },
+            .in_values => |iv| {
+                freeExpr(allocator, iv.operand);
+                for (iv.values) |v| freeExpr(allocator, v);
+                allocator.free(iv.values);
             },
             .scalar_func => |sf| {
                 for (sf.args) |arg| {
