@@ -866,6 +866,14 @@ pub const Database = struct {
                 const val = rng.random().int(i64);
                 return .{ .integer = val };
             },
+            .sign => {
+                if (args.len != 1) return .null_val;
+                const val = try self.evalExpr(args[0], tbl, row);
+                defer if (val == .text) self.allocator.free(val.text);
+                if (val == .null_val) return .null_val;
+                const n = self.valueToI64(val) orelse return .null_val;
+                return .{ .integer = if (n > 0) @as(i64, 1) else if (n < 0) @as(i64, -1) else 0 };
+            },
         }
     }
 

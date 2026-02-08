@@ -125,6 +125,7 @@ pub const ScalarFunc = enum {
     round,
     ifnull,
     random,
+    sign,
 };
 
 pub const Expr = union(enum) {
@@ -1572,6 +1573,7 @@ pub const Parser = struct {
             .{ "ROUND", ScalarFunc.round },
             .{ "IFNULL", ScalarFunc.ifnull },
             .{ "RANDOM", ScalarFunc.random },
+            .{ "SIGN", ScalarFunc.sign },
         };
         inline for (funcs) |entry| {
             if (std.ascii.eqlIgnoreCase(name, entry[0])) {
