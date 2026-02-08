@@ -36,6 +36,8 @@ pub const ScalarFunc = parser.ScalarFunc;
 // Re-export table type for internal use
 pub const Table = table_mod.Table;
 
+const convert = @import("convert.zig");
+
 const dupeStr = value_mod.dupeStr;
 const compareValuesOrder = value_mod.compareValuesOrder;
 const rowsEqual = value_mod.rowsEqual;
@@ -2729,206 +2731,30 @@ pub const Database = struct {
     }
 
     /// Convert Value to boolean (SQLite3 semantics: 0 and NULL are false)
+    // Delegated to convert.zig
     fn valueToBool(_: *Database, val: Value) bool {
-        return switch (val) {
-            .integer => |n| n != 0,
-            .text => true,
-            .null_val => false,
-        };
+        return convert.valueToBool(val);
     }
-
-    /// Free a where_expr tree including subquery SQL buffers
     fn freeWhereExpr(self: *Database, expr: *const Expr) void {
-        self.freeExprDeep(expr);
+        convert.freeExprDeep(self.allocator, expr);
     }
-
     fn freeExprDeep(self: *Database, expr: *const Expr) void {
-        switch (expr.*) {
-            .binary_op => |bin| {
-                self.freeExprDeep(bin.left);
-                self.freeExprDeep(bin.right);
-            },
-            .aggregate => |agg| {
-                self.freeExprDeep(agg.arg);
-            },
-            .case_when => |cw| {
-                for (cw.conditions) |cond| self.freeExprDeep(cond);
-                self.allocator.free(cw.conditions);
-                for (cw.results) |res| self.freeExprDeep(res);
-                self.allocator.free(cw.results);
-                if (cw.else_result) |er| self.freeExprDeep(er);
-            },
-            .unary_op => |u| {
-                self.freeExprDeep(u.operand);
-            },
-            .in_list => |il| {
-                self.freeExprDeep(il.operand);
-                self.allocator.free(@constCast(il.subquery_sql));
-            },
-            .in_values => |iv| {
-                self.freeExprDeep(iv.operand);
-                for (iv.values) |v| self.freeExprDeep(v);
-                self.allocator.free(iv.values);
-            },
-            .scalar_subquery => |sq| {
-                self.allocator.free(@constCast(sq.subquery_sql));
-            },
-            .exists => |ex| {
-                self.allocator.free(@constCast(ex.subquery_sql));
-            },
-            .scalar_func => |sf| {
-                for (sf.args) |arg| self.freeExprDeep(arg);
-                self.allocator.free(sf.args);
-            },
-            .cast => |c| {
-                self.freeExprDeep(c.operand);
-            },
-            .window_func => |wf| {
-                if (wf.arg) |arg| self.freeExprDeep(arg);
-                if (wf.default_val) |dv| self.freeExprDeep(dv);
-                for (wf.order_by) |ob| {
-                    if (ob.expr) |e| self.freeExprDeep(e);
-                }
-                if (wf.order_by.len > 0) self.allocator.free(wf.order_by);
-                if (wf.partition_by.len > 0) self.allocator.free(wf.partition_by);
-            },
-            else => {},
-        }
-        self.allocator.destroy(@constCast(expr));
+        convert.freeExprDeep(self.allocator, expr);
     }
-
     fn valueToText(self: *Database, val: Value) []const u8 {
-        switch (val) {
-            .text => |t| return dupeStr(self.allocator, t) catch "",
-            .integer => |n| {
-                var buf: [32]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return "";
-                return dupeStr(self.allocator, slice) catch "";
-            },
-            .null_val => return dupeStr(self.allocator, "") catch "",
-        }
+        return convert.valueToText(self.allocator, val);
     }
-
     fn valueToI64(_: *Database, val: Value) ?i64 {
-        switch (val) {
-            .integer => |n| return n,
-            .text => |t| return std.fmt.parseInt(i64, t, 10) catch null,
-            .null_val => return null,
-        }
+        return convert.valueToI64(val);
     }
-
     fn valueToF64(_: *Database, val: Value) ?f64 {
-        switch (val) {
-            .integer => |n| return @floatFromInt(n),
-            .text => |t| return std.fmt.parseFloat(f64, t) catch null,
-            .null_val => return null,
-        }
+        return convert.valueToF64(val);
     }
-
     fn isFloatValue(_: *Database, val: Value) bool {
-        switch (val) {
-            .text => |t| {
-                // Check if it contains a decimal point (float value)
-                for (t) |c| {
-                    if (c == '.') return true;
-                }
-                return false;
-            },
-            else => return false,
-        }
+        return convert.isFloatValue(val);
     }
-
     fn formatFloat(self: *Database, f_in: f64) Value {
-        // Normalize negative zero to positive zero (SQLite behavior)
-        const f = if (f_in == 0.0) @as(f64, 0.0) else f_in;
-        // SQLite uses %.15g format (15 significant digits, trailing zeros removed)
-        // We use a C-compatible sprintf approach via Zig
-        var buf: [64]u8 = undefined;
-
-        // Format with full precision first
-        const full = std.fmt.bufPrint(&buf, "{d}", .{f}) catch return .null_val;
-
-        // Count significant digits
-        var sig_count: usize = 0;
-        var started = false;
-        var has_dot = false;
-        for (full) |c| {
-            if (c == '-') continue;
-            if (c == '.') {
-                has_dot = true;
-                continue;
-            }
-            if (c == 'e' or c == 'E') break;
-            if (c != '0') started = true;
-            if (started) sig_count += 1;
-        }
-
-        if (sig_count <= 15) {
-            // No truncation needed
-            if (!has_dot) {
-                const txt = std.fmt.allocPrint(self.allocator, "{s}.0", .{full}) catch return .null_val;
-                return .{ .text = txt };
-            }
-            const txt = self.allocator.alloc(u8, full.len) catch return .null_val;
-            @memcpy(txt, full);
-            return .{ .text = txt };
-        }
-
-        // Need to truncate: rebuild with 15 significant digits via rounding
-        // Strategy: find position to truncate, round last digit
-        var result_buf: [64]u8 = undefined;
-        var ri: usize = 0;
-        var sig: usize = 0;
-        var s = false;
-        for (full, 0..) |c, i| {
-            if (c == '-' or c == '.') {
-                result_buf[ri] = c;
-                ri += 1;
-                continue;
-            }
-            if (c == 'e' or c == 'E') {
-                // Copy exponent
-                const rest = full[i..];
-                @memcpy(result_buf[ri .. ri + rest.len], rest);
-                ri += rest.len;
-                break;
-            }
-            if (c != '0') s = true;
-            if (s) sig += 1;
-            if (sig <= 15) {
-                result_buf[ri] = c;
-                ri += 1;
-            } else if (sig == 16) {
-                // Use this digit for rounding
-                if (c >= '5') {
-                    // Round up last digit
-                    var j = ri;
-                    while (j > 0) {
-                        j -= 1;
-                        if (result_buf[j] == '.') continue;
-                        if (result_buf[j] == '-') break;
-                        if (result_buf[j] < '9') {
-                            result_buf[j] += 1;
-                            break;
-                        } else {
-                            result_buf[j] = '0';
-                        }
-                    }
-                }
-                break;
-            }
-        }
-
-        // Remove trailing zeros after decimal point
-        var end = ri;
-        if (std.mem.indexOfScalar(u8, result_buf[0..ri], '.')) |dot_pos| {
-            while (end > dot_pos + 2 and result_buf[end - 1] == '0') {
-                end -= 1;
-            }
-        }
-        const txt = self.allocator.alloc(u8, end) catch return .null_val;
-        @memcpy(txt, result_buf[0..end]);
-        return .{ .text = txt };
+        return convert.formatFloat(self.allocator, f_in);
     }
 
     /// Resolve a column argument for aggregate (handles both "col" and "table.col" formats)
