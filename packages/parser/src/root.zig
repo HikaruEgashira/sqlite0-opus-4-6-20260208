@@ -471,6 +471,14 @@ pub const Parser = struct {
         return tok.type == .identifier and std.ascii.eqlIgnoreCase(tok.lexeme, keyword);
     }
 
+    /// Check if a keyword token type can also serve as an identifier (column name/alias)
+    fn isKeywordAsIdentifier(tt: TokenType) bool {
+        return switch (tt) {
+            .kw_total, .kw_text, .kw_integer, .kw_real, .kw_replace, .kw_like, .kw_glob, .kw_key => true,
+            else => false,
+        };
+    }
+
     fn expectAlias(self: *Parser) ParseError!Token {
         const tok = self.advance();
         if (tok.type == .identifier) return tok;
@@ -974,6 +982,21 @@ pub const Parser = struct {
                 const first_select_sql = try self.reconstructSQL(self.tokens[select_start..self.pos]);
                 return try self.parseSetOp(first_select_sql);
             }
+            // Parse optional ORDER BY for table-less SELECT
+            const tl_order_by: ?OrderByClause = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
+            // Parse optional LIMIT/OFFSET
+            var tl_limit: ?i64 = null;
+            var tl_offset: ?i64 = null;
+            if (self.peek().type == .kw_limit) {
+                _ = self.advance();
+                const lim_tok = try self.expect(.integer_literal);
+                tl_limit = std.fmt.parseInt(i64, lim_tok.lexeme, 10) catch 0;
+            }
+            if (self.peek().type == .kw_offset) {
+                _ = self.advance();
+                const off_tok = try self.expect(.integer_literal);
+                tl_offset = std.fmt.parseInt(i64, off_tok.lexeme, 10) catch 0;
+            }
             _ = try self.expect(.semicolon);
             return Statement{
                 .select_stmt = .{
@@ -988,9 +1011,9 @@ pub const Parser = struct {
                     .where_expr = null,
                     .group_by = null,
                     .having = null,
-                    .order_by = null,
-                    .limit = null,
-                    .offset = null,
+                    .order_by = tl_order_by,
+                    .limit = tl_limit,
+                    .offset = tl_offset,
                 },
             };
         }
@@ -1594,6 +1617,12 @@ pub const Parser = struct {
 
         // Aggregate function (or MAX/MIN scalar with multiple args)
         if (isAggFunc(tok.type)) |func| {
+            // Only treat as aggregate if followed by '('
+            if (self.pos + 1 >= self.tokens.len or self.tokens[self.pos + 1].type != .lparen) {
+                // Treat as identifier (e.g., column alias 'total')
+                _ = self.advance();
+                return self.allocExpr(.{ .column_ref = tok.lexeme });
+            }
             _ = self.advance();
             _ = try self.expect(.lparen);
             // Check for DISTINCT keyword
@@ -1847,12 +1876,13 @@ pub const Parser = struct {
         }
 
         // Identifier (column reference), possibly table-qualified (t1.col)
-        if (tok.type == .identifier) {
+        // Also handle keywords that can be used as identifiers/aliases
+        if (tok.type == .identifier or isKeywordAsIdentifier(tok.type)) {
             _ = self.advance();
             // Check for table-qualified reference: ident.ident
             if (self.peek().type == .dot) {
                 _ = self.advance(); // consume dot
-                const col_tok = try self.expect(.identifier);
+                const col_tok = self.advance();
                 return self.allocExpr(.{ .qualified_ref = .{ .table = tok.lexeme, .column = col_tok.lexeme } });
             }
             return self.allocExpr(.{ .column_ref = tok.lexeme });

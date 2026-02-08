@@ -2777,6 +2777,29 @@ pub const Database = struct {
             }
         }
 
+        // Apply LIMIT/OFFSET
+        var result_start: usize = 0;
+        var result_end: usize = proj_rows.len;
+        if (sel.offset) |off| {
+            if (off > 0) {
+                result_start = @min(@as(usize, @intCast(off)), proj_rows.len);
+            }
+        }
+        if (sel.limit) |lim| {
+            if (lim >= 0) {
+                result_end = @min(result_start + @as(usize, @intCast(lim)), proj_rows.len);
+            }
+        }
+        if (result_start > 0 or result_end < proj_rows.len) {
+            const sliced_rows = try self.allocator.alloc(Row, result_end - result_start);
+            @memcpy(sliced_rows, proj_rows[result_start..result_end]);
+            self.projected_rows = sliced_rows;
+            self.projected_values = proj_values;
+            try self.collectAggTexts(sel.select_exprs, proj_values);
+            self.allocator.free(proj_rows);
+            return .{ .rows = sliced_rows };
+        }
+
         self.projected_rows = proj_rows;
         self.projected_values = proj_values;
         try self.collectAggTexts(sel.select_exprs, proj_values);

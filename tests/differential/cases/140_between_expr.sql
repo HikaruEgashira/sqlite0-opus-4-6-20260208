@@ -1,0 +1,19 @@
+-- BETWEEN with various expressions
+CREATE TABLE t (id INTEGER, val INTEGER, name TEXT);
+INSERT INTO t VALUES (1, 5, 'a');
+INSERT INTO t VALUES (2, 15, 'b');
+INSERT INTO t VALUES (3, 25, 'c');
+INSERT INTO t VALUES (4, 35, 'd');
+INSERT INTO t VALUES (5, 45, 'e');
+
+-- Basic BETWEEN
+SELECT * FROM t WHERE val BETWEEN 10 AND 30 ORDER BY id;
+
+-- NOT BETWEEN
+SELECT * FROM t WHERE val NOT BETWEEN 10 AND 30 ORDER BY id;
+
+-- BETWEEN with expressions
+SELECT * FROM t WHERE val BETWEEN 5 * 2 AND 5 * 6 ORDER BY id;
+
+-- BETWEEN with column reference
+SELECT * FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id;
