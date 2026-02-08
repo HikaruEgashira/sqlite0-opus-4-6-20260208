@@ -1894,35 +1894,105 @@ pub const Database = struct {
     fn sortRowsByOrderBy(self: *Database, tbl: *const Table, rows: []Row, items: []const OrderByItem) !void {
         if (items.len == 0) return;
 
-        // Resolve column indices
-        var col_indices = try self.allocator.alloc(usize, items.len);
-        defer self.allocator.free(col_indices);
-        var desc_flags = try self.allocator.alloc(bool, items.len);
-        defer self.allocator.free(desc_flags);
-
-        for (items, 0..) |item, i| {
-            col_indices[i] = tbl.findColumnIndex(item.column) orelse return;
-            desc_flags[i] = item.order == .desc;
+        // Check if any item uses expressions
+        var has_expr = false;
+        for (items) |item| {
+            if (item.expr != null) { has_expr = true; break; }
         }
 
-        const MultiSortCtx = struct {
-            indices: []const usize,
-            descs: []const bool,
-
-            fn lessThan(ctx: @This(), a: Row, b: Row) bool {
-                for (ctx.indices, ctx.descs) |col_idx, is_desc| {
-                    const va = a.values[col_idx];
-                    const vb = b.values[col_idx];
-                    const cmp = compareValuesOrder(va, vb);
-                    if (cmp == .eq) continue;
-                    if (is_desc) return cmp == .gt;
-                    return cmp == .lt;
+        if (has_expr) {
+            // Precompute sort keys for expression-based ORDER BY
+            const n_keys = items.len;
+            var sort_keys = try self.allocator.alloc([]Value, rows.len);
+            defer {
+                for (sort_keys) |keys| {
+                    for (keys) |v| {
+                        if (v == .text) self.allocator.free(v.text);
+                    }
+                    self.allocator.free(keys);
                 }
-                return false; // all equal
+                self.allocator.free(sort_keys);
             }
-        };
+            for (rows, 0..) |row, ri| {
+                var keys = try self.allocator.alloc(Value, n_keys);
+                for (items, 0..) |item, ki| {
+                    if (item.expr) |expr| {
+                        keys[ki] = try self.evalExpr(expr, tbl, row);
+                    } else {
+                        const col_idx = tbl.findColumnIndex(item.column) orelse {
+                            keys[ki] = .null_val;
+                            continue;
+                        };
+                        keys[ki] = row.values[col_idx];
+                        // Don't duplicate text - just reference
+                        if (keys[ki] == .text) {
+                            keys[ki] = .{ .text = try dupeStr(self.allocator, keys[ki].text) };
+                        }
+                    }
+                }
+                sort_keys[ri] = keys;
+            }
 
-        std.mem.sort(Row, rows, MultiSortCtx{ .indices = col_indices, .descs = desc_flags }, MultiSortCtx.lessThan);
+            var desc_flags = try self.allocator.alloc(bool, n_keys);
+            defer self.allocator.free(desc_flags);
+            for (items, 0..) |item, i| desc_flags[i] = item.order == .desc;
+
+            // Create index array and sort indices
+            const indices = try self.allocator.alloc(usize, rows.len);
+            defer self.allocator.free(indices);
+            for (indices, 0..) |*idx, i| idx.* = i;
+
+            const ExprSortCtx = struct {
+                keys: []const []Value,
+                descs: []const bool,
+                fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                    for (ctx.keys[a], ctx.keys[b], ctx.descs) |va, vb, is_desc| {
+                        const cmp = compareValuesOrder(va, vb);
+                        if (cmp == .eq) continue;
+                        if (is_desc) return cmp == .gt;
+                        return cmp == .lt;
+                    }
+                    return false;
+                }
+            };
+            std.mem.sort(usize, indices, ExprSortCtx{ .keys = sort_keys, .descs = desc_flags }, ExprSortCtx.lessThan);
+
+            // Reorder rows in-place using indices
+            var sorted = try self.allocator.alloc(Row, rows.len);
+            defer self.allocator.free(sorted);
+            for (indices, 0..) |idx, i| sorted[i] = rows[idx];
+            @memcpy(rows, sorted);
+        } else {
+            // Simple column-based sort
+            var col_indices = try self.allocator.alloc(usize, items.len);
+            defer self.allocator.free(col_indices);
+            var desc_flags = try self.allocator.alloc(bool, items.len);
+            defer self.allocator.free(desc_flags);
+
+            for (items, 0..) |item, i| {
+                col_indices[i] = tbl.findColumnIndex(item.column) orelse return;
+                desc_flags[i] = item.order == .desc;
+            }
+
+            const MultiSortCtx = struct {
+                indices: []const usize,
+                descs: []const bool,
+
+                fn lessThan(ctx: @This(), a: Row, b: Row) bool {
+                    for (ctx.indices, ctx.descs) |col_idx, is_desc| {
+                        const va = a.values[col_idx];
+                        const vb = b.values[col_idx];
+                        const cmp = compareValuesOrder(va, vb);
+                        if (cmp == .eq) continue;
+                        if (is_desc) return cmp == .gt;
+                        return cmp == .lt;
+                    }
+                    return false;
+                }
+            };
+
+            std.mem.sort(Row, rows, MultiSortCtx{ .indices = col_indices, .descs = desc_flags }, MultiSortCtx.lessThan);
+        }
     }
 
     fn rowComparator(_: OrderByClause, row1: Row, row2: Row) bool {
@@ -2086,7 +2156,12 @@ pub const Database = struct {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
                 defer self.allocator.free(sel.aliases);
-                defer if (sel.order_by) |ob| self.allocator.free(ob.items);
+                defer if (sel.order_by) |ob| {
+                    for (ob.items) |item| {
+                        if (item.expr) |e| self.freeExprDeep(e);
+                    }
+                    self.allocator.free(ob.items);
+                };
                 defer {
                     for (sel.result_exprs) |e| self.freeExprDeep(e);
                     self.allocator.free(sel.result_exprs);
@@ -2269,7 +2344,12 @@ pub const Database = struct {
                     }
                     self.allocator.free(union_sel.selects);
                 }
-                defer if (union_sel.order_by) |ob| self.allocator.free(ob.items);
+                defer if (union_sel.order_by) |ob| {
+                    for (ob.items) |item| {
+                        if (item.expr) |e| self.freeExprDeep(e);
+                    }
+                    self.allocator.free(ob.items);
+                };
                 return self.executeUnion(union_sel);
             },
         }

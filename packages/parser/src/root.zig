@@ -17,8 +17,9 @@ pub const SortOrder = enum {
 };
 
 pub const OrderByItem = struct {
-    column: []const u8,
+    column: []const u8, // column name (empty if expr-based)
     order: SortOrder,
+    expr: ?*const Expr = null, // expression for ORDER BY (null if simple column)
 };
 
 pub const OrderByClause = struct {
@@ -848,7 +849,9 @@ pub const Parser = struct {
         var items: std.ArrayList(OrderByItem) = .{};
 
         while (true) {
-            const col_tok = try self.expect(.identifier);
+            const expr = try self.parseExpr();
+            // Check if it's a simple column reference
+            const col_name: []const u8 = if (expr.* == .column_ref) expr.column_ref else "";
             var order: SortOrder = .asc;
             if (self.peek().type == .kw_asc) {
                 _ = self.advance();
@@ -857,7 +860,12 @@ pub const Parser = struct {
                 _ = self.advance();
                 order = .desc;
             }
-            items.append(self.allocator, .{ .column = col_tok.lexeme, .order = order }) catch return ParseError.OutOfMemory;
+            const order_expr: ?*const Expr = if (col_name.len == 0) expr else blk: {
+                // Free the Expr allocation for simple column refs since we keep just the name
+                self.allocator.destroy(@constCast(expr));
+                break :blk null;
+            };
+            items.append(self.allocator, .{ .column = col_name, .order = order, .expr = order_expr }) catch return ParseError.OutOfMemory;
 
             if (self.peek().type == .comma) {
                 _ = self.advance();
