@@ -22,7 +22,7 @@
 - UNION / UNION ALL / INTERSECT / EXCEPT
 - ~~複数カラムのUPDATE SET~~ ✓
 - ~~比較演算子を式として使用~~ ✓
-- WHERE句の式ベース化（AND/ORを含む完全なExpr化）
+- ~~WHERE句の式ベース化（AND/ORを含む完全なExpr化）~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

@@ -40,12 +40,29 @@
 - ユニットテスト: 23/23 passing
 - Differential Test: **36/36 passing**（前回32 → 追加4件）
 
-## 予定
+## Phase 6c: WHERE句の式ベース化（完了）
 
-### Phase 6c: WHERE句の式ベース化
-- WHERE句全体をExpr ASTとして評価する
-- SELECT式内でのCASE WHEN使用対応
-- 複合条件（AND/OR）の式統合
+### 実施内容
+- [x] BinOpにlogical_and, logical_or追加
+- [x] UnaryOp enum追加（is_null, is_not_null）
+- [x] Exprにunary_op, in_list, scalar_subqueryバリアント追加
+- [x] parseExprにAND/OR（parseLogical層）追加
+- [x] parseComparisonにIS NULL/IS NOT NULL/IN処理追加
+- [x] parsePrimaryでスカラーサブクエリ(SELECT...)認識
+- [x] Select/Delete/Updateにwhere_exprフィールド追加
+- [x] parseDelete/parseUpdateをwhere_exprベースに変更
+- [x] parseSelectをwhere_exprベースに変更（JOINあり時は旧WhereClause維持）
+- [x] evalExprにAND/OR短絡評価、IS NULL/IS NOT NULL、IN、scalar_subquery追加
+- [x] compareValuesOrderで integer vs text の数値比較対応（AVG等のfloat値に対応）
+- [x] freeExprDeepでExprツリー全体（subquery_sql含む）を再帰的解放
+- [x] execute()内でwhere_expr/result_exprs/set_columns/set_valuesの適切なdefer解放
+- [x] Differential Test追加: 38_where_expr.sql, 39_where_is_null.sql
+
+### 結果
+- ユニットテスト: 23/23 passing（メモリリーク0）
+- Differential Test: **38/38 passing**（前回36 → 追加2件）
+
+## 予定
 
 ### Phase 6d: ストレージ抽象化 + B-Tree
 - StorageBackend traitの定義

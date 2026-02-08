@@ -1,0 +1,12 @@
+CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER, stock INTEGER);
+INSERT INTO products VALUES (1, 'apple', 100, 50);
+INSERT INTO products VALUES (2, 'banana', 200, 0);
+INSERT INTO products VALUES (3, 'cherry', 150, 30);
+INSERT INTO products VALUES (4, 'date', 300, 10);
+INSERT INTO products VALUES (5, 'elderberry', 50, 100);
+SELECT name, price FROM products WHERE price > 100 AND stock > 0;
+SELECT name FROM products WHERE price < 100 OR stock = 0;
+SELECT name FROM products WHERE price >= 150 AND stock > 0 AND id > 1;
+SELECT name FROM products WHERE (price > 200 OR stock > 50) AND name LIKE '%e%';
+SELECT name FROM products WHERE price IN (SELECT price FROM products WHERE stock = 0);
+SELECT * FROM products WHERE price > (SELECT AVG(price) FROM products);

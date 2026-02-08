@@ -77,6 +77,13 @@ pub const BinOp = enum {
     gt, // >
     ge, // >=
     like, // LIKE pattern matching
+    logical_and, // AND
+    logical_or, // OR
+};
+
+pub const UnaryOp = enum {
+    is_null,
+    is_not_null,
 };
 
 pub const Expr = union(enum) {
@@ -98,6 +105,17 @@ pub const Expr = union(enum) {
         conditions: []const *const Expr,  // WHEN conditions
         results: []const *const Expr,     // THEN results
         else_result: ?*const Expr,        // ELSE result (optional)
+    },
+    unary_op: struct {
+        op: UnaryOp,
+        operand: *const Expr,
+    },
+    in_list: struct {
+        operand: *const Expr,
+        subquery_sql: []const u8, // SQL text for IN (SELECT ...)
+    },
+    scalar_subquery: struct {
+        subquery_sql: []const u8, // SQL text for (SELECT ...)
     },
 };
 
@@ -162,6 +180,7 @@ pub const Statement = union(enum) {
         distinct: bool,
         join: ?JoinClause,
         where: ?WhereClause,
+        where_expr: ?*const Expr = null, // Expr-based WHERE (Phase 6c)
         group_by: ?[]const u8, // column name
         having: ?HavingClause,
         order_by: ?OrderByClause,
@@ -172,6 +191,7 @@ pub const Statement = union(enum) {
     pub const Delete = struct {
         table_name: []const u8,
         where: ?WhereClause,
+        where_expr: ?*const Expr = null,
     };
 
     pub const Update = struct {
@@ -179,6 +199,7 @@ pub const Statement = union(enum) {
         set_columns: []const []const u8,
         set_values: []const []const u8,
         where: ?WhereClause,
+        where_expr: ?*const Expr = null,
     };
 
     pub const DropTable = struct {
@@ -433,7 +454,18 @@ pub const Parser = struct {
         else
             null;
 
-        const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
+        // Parse WHERE clause: use Expr-based parsing (Phase 6c)
+        // JOINありの場合は旧WhereClauseを使う（テーブル修飾の解決が必要なため）
+        var where: ?WhereClause = null;
+        var where_expr: ?*const Expr = null;
+        if (self.peek().type == .kw_where) {
+            if (join != null) {
+                where = try self.parseWhereClause();
+            } else {
+                _ = self.advance(); // consume WHERE
+                where_expr = try self.parseWhereExpr();
+            }
+        }
 
         // Parse optional GROUP BY
         var group_by: ?[]const u8 = null;
@@ -504,6 +536,7 @@ pub const Parser = struct {
                 .distinct = distinct,
                 .join = join,
                 .where = where,
+                .where_expr = where_expr,
                 .group_by = group_by,
                 .having = having,
                 .order_by = order_by,
@@ -572,16 +605,65 @@ pub const Parser = struct {
         return ptr;
     }
 
-    /// Parse an expression: handles comparison operators (lowest precedence)
+    /// Parse an expression: AND/OR (lowest) > comparison > add/sub > mul/div > primary
     pub fn parseExpr(self: *Parser) ParseError!*const Expr {
-        return self.parseComparison();
+        return self.parseLogical();
     }
 
-    /// Parse comparison operators: =, !=, <, <=, >, >=, LIKE
+    /// Parse WHERE expression (alias for parseExpr, which now includes AND/OR)
+    pub fn parseWhereExpr(self: *Parser) ParseError!*const Expr {
+        return self.parseExpr();
+    }
+
+    /// Parse logical AND/OR (lowest precedence)
+    fn parseLogical(self: *Parser) ParseError!*const Expr {
+        var left = try self.parseComparison();
+
+        while (true) {
+            const op_opt: ?BinOp = switch (self.peek().type) {
+                .kw_and => .logical_and,
+                .kw_or => .logical_or,
+                else => null,
+            };
+
+            if (op_opt == null) break;
+
+            _ = self.advance();
+            const right = try self.parseComparison();
+            left = try self.allocExpr(.{ .binary_op = .{ .op = op_opt.?, .left = left, .right = right } });
+        }
+
+        return left;
+    }
+
+    /// Parse comparison operators: =, !=, <, <=, >, >=, LIKE, IS NULL, IS NOT NULL, IN
     fn parseComparison(self: *Parser) ParseError!*const Expr {
         var left = try self.parseAddSub();
 
         while (true) {
+            // IS NULL / IS NOT NULL
+            if (self.peek().type == .kw_is) {
+                _ = self.advance();
+                if (self.peek().type == .kw_not) {
+                    _ = self.advance();
+                    _ = try self.expect(.kw_null);
+                    left = try self.allocExpr(.{ .unary_op = .{ .op = .is_not_null, .operand = left } });
+                    continue;
+                }
+                _ = try self.expect(.kw_null);
+                left = try self.allocExpr(.{ .unary_op = .{ .op = .is_null, .operand = left } });
+                continue;
+            }
+
+            // IN (SELECT ...)
+            if (self.peek().type == .kw_in) {
+                _ = self.advance();
+                _ = try self.expect(.lparen);
+                const sql = try self.extractSubquerySQL();
+                left = try self.allocExpr(.{ .in_list = .{ .operand = left, .subquery_sql = sql } });
+                continue;
+            }
+
             const op_opt: ?BinOp = switch (self.peek().type) {
                 .equals => .eq,
                 .not_equals => .ne,
@@ -690,8 +772,14 @@ pub const Parser = struct {
             return self.allocExpr(.{ .aggregate = .{ .func = func, .arg = arg_expr } });
         }
 
-        // Parenthesized expression
+        // Parenthesized expression or scalar subquery
         if (tok.type == .lparen) {
+            // Check for scalar subquery: (SELECT ...)
+            if (self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .kw_select) {
+                _ = self.advance(); // consume '('
+                const sql = try self.extractSubquerySQL();
+                return self.allocExpr(.{ .scalar_subquery = .{ .subquery_sql = sql } });
+            }
             _ = self.advance();
             const inner = try self.parseExpr();
             _ = try self.expect(.rparen);
@@ -781,6 +869,12 @@ pub const Parser = struct {
                 if (cw.else_result) |else_res| {
                     freeExpr(allocator, else_res);
                 }
+            },
+            .unary_op => |u| {
+                freeExpr(allocator, u.operand);
+            },
+            .in_list => |il| {
+                freeExpr(allocator, il.operand);
             },
             else => {},
         }
@@ -922,12 +1016,17 @@ pub const Parser = struct {
         _ = try self.expect(.kw_from);
         const name_tok = try self.expect(.identifier);
 
-        const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
+        var where_expr: ?*const Expr = null;
+        if (self.peek().type == .kw_where) {
+            _ = self.advance(); // consume WHERE
+            where_expr = try self.parseWhereExpr();
+        }
         _ = try self.expect(.semicolon);
 
         return Statement{ .delete = .{
             .table_name = name_tok.lexeme,
-            .where = where,
+            .where = null,
+            .where_expr = where_expr,
         } };
     }
 
@@ -966,14 +1065,19 @@ pub const Parser = struct {
             try set_values.append(self.allocator, next_val.lexeme);
         }
 
-        const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
+        var where_expr: ?*const Expr = null;
+        if (self.peek().type == .kw_where) {
+            _ = self.advance(); // consume WHERE
+            where_expr = try self.parseWhereExpr();
+        }
         _ = try self.expect(.semicolon);
 
         return Statement{ .update = .{
             .table_name = name_tok.lexeme,
             .set_columns = try set_columns.toOwnedSlice(self.allocator),
             .set_values = try set_values.toOwnedSlice(self.allocator),
-            .where = where,
+            .where = null,
+            .where_expr = where_expr,
         } };
     }
 
@@ -1129,11 +1233,13 @@ test "parse SELECT with WHERE" {
         .select_stmt => |sel| {
             defer allocator.free(sel.columns);
             defer allocator.free(sel.result_exprs);
+            // Phase 6c: WHERE is now parsed as where_expr
             try std.testing.expectEqualStrings("users", sel.table_name);
-            try std.testing.expect(sel.where != null);
-            try std.testing.expectEqualStrings("id", sel.where.?.column);
-            try std.testing.expectEqual(CompOp.eq, sel.where.?.op);
-            try std.testing.expectEqualStrings("1", sel.where.?.value);
+            try std.testing.expect(sel.where_expr != null);
+            defer Parser.freeExpr(allocator, sel.where_expr.?);
+            // where_expr should be binary_op(eq, column_ref("id"), integer_literal(1))
+            try std.testing.expect(sel.where_expr.?.* == .binary_op);
+            try std.testing.expectEqual(BinOp.eq, sel.where_expr.?.binary_op.op);
         },
         else => return error.UnexpectedToken,
     }
@@ -1151,8 +1257,9 @@ test "parse DELETE" {
     switch (stmt) {
         .delete => |del| {
             try std.testing.expectEqualStrings("users", del.table_name);
-            try std.testing.expect(del.where != null);
-            try std.testing.expectEqualStrings("id", del.where.?.column);
+            try std.testing.expect(del.where_expr != null);
+            defer Parser.freeExpr(allocator, del.where_expr.?);
+            try std.testing.expect(del.where_expr.?.* == .binary_op);
         },
         else => return error.UnexpectedToken,
     }
@@ -1176,7 +1283,8 @@ test "parse UPDATE" {
             try std.testing.expectEqualStrings("name", upd.set_columns[0]);
             try std.testing.expect(upd.set_values.len == 1);
             try std.testing.expectEqualStrings("'bob'", upd.set_values[0]);
-            try std.testing.expect(upd.where != null);
+            try std.testing.expect(upd.where_expr != null);
+            defer Parser.freeExpr(allocator, upd.where_expr.?);
         },
         else => return error.UnexpectedToken,
     }

@@ -18,6 +18,7 @@ pub const JoinType = parser.JoinType;
 pub const HavingClause = parser.HavingClause;
 pub const Expr = parser.Expr;
 pub const BinOp = parser.BinOp;
+pub const UnaryOp = parser.UnaryOp;
 
 pub const Value = union(enum) {
     integer: i64,
@@ -225,15 +226,41 @@ fn compareValuesOrder(a: Value, b: Value) std.math.Order {
     }
     // Text vs Text
     if (a == .text and b == .text) {
+        // Try numeric comparison if both parse as numbers
+        if (parseTextAsNumber(a.text)) |a_num| {
+            if (parseTextAsNumber(b.text)) |b_num| {
+                return floatOrder(a_num, b_num);
+            }
+        }
         return std.mem.order(u8, a.text, b.text);
     }
-    // Integer < Text (SQLite3 type affinity: integers sort before text)
-    if (a == .integer and b == .text) return .lt;
-    if (a == .text and b == .integer) return .gt;
+    // Integer vs Text: try numeric comparison (SQLite3 type affinity)
+    if (a == .integer and b == .text) {
+        if (parseTextAsNumber(b.text)) |b_num| {
+            return floatOrder(@floatFromInt(a.integer), b_num);
+        }
+        return .lt;
+    }
+    if (a == .text and b == .integer) {
+        if (parseTextAsNumber(a.text)) |a_num| {
+            return floatOrder(a_num, @floatFromInt(b.integer));
+        }
+        return .gt;
+    }
     // null_val sorts before everything
     if (a == .null_val and b == .null_val) return .eq;
     if (a == .null_val) return .lt;
     if (b == .null_val) return .gt;
+    return .eq;
+}
+
+fn parseTextAsNumber(text: []const u8) ?f64 {
+    return std.fmt.parseFloat(f64, text) catch null;
+}
+
+fn floatOrder(a: f64, b: f64) std.math.Order {
+    if (a < b) return .lt;
+    if (a > b) return .gt;
     return .eq;
 }
 
@@ -454,6 +481,26 @@ pub const Database = struct {
                 return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
             },
             .binary_op => |bin| {
+                // AND/OR: short-circuit evaluation
+                if (bin.op == .logical_and) {
+                    const left_val = try self.evalExpr(bin.left, tbl, row);
+                    defer if (left_val == .text) self.allocator.free(left_val.text);
+                    const left_true = self.valueToBool(left_val);
+                    if (!left_true) return .{ .integer = 0 };
+                    const right_val = try self.evalExpr(bin.right, tbl, row);
+                    defer if (right_val == .text) self.allocator.free(right_val.text);
+                    return .{ .integer = if (self.valueToBool(right_val)) @as(i64, 1) else 0 };
+                }
+                if (bin.op == .logical_or) {
+                    const left_val = try self.evalExpr(bin.left, tbl, row);
+                    defer if (left_val == .text) self.allocator.free(left_val.text);
+                    const left_true = self.valueToBool(left_val);
+                    if (left_true) return .{ .integer = 1 };
+                    const right_val = try self.evalExpr(bin.right, tbl, row);
+                    defer if (right_val == .text) self.allocator.free(right_val.text);
+                    return .{ .integer = if (self.valueToBool(right_val)) @as(i64, 1) else 0 };
+                }
+
                 const left_val = try self.evalExpr(bin.left, tbl, row);
                 const right_val = try self.evalExpr(bin.right, tbl, row);
                 defer {
@@ -519,7 +566,7 @@ pub const Database = struct {
                             else => unreachable,
                         } };
                     },
-                    .eq, .ne, .lt, .le, .gt, .ge, .like => unreachable,
+                    .eq, .ne, .lt, .le, .gt, .ge, .like, .logical_and, .logical_or => unreachable,
                 }
             },
             .aggregate => {
@@ -551,7 +598,94 @@ pub const Database = struct {
                 // No ELSE and no match -> NULL
                 return .null_val;
             },
+            .unary_op => |u| {
+                const operand_val = try self.evalExpr(u.operand, tbl, row);
+                defer if (operand_val == .text) self.allocator.free(operand_val.text);
+                return switch (u.op) {
+                    .is_null => .{ .integer = if (operand_val == .null_val) @as(i64, 1) else 0 },
+                    .is_not_null => .{ .integer = if (operand_val != .null_val) @as(i64, 1) else 0 },
+                };
+            },
+            .in_list => |il| {
+                const operand_val = try self.evalExpr(il.operand, tbl, row);
+                defer if (operand_val == .text) self.allocator.free(operand_val.text);
+                if (operand_val == .null_val) return .null_val;
+
+                const sub_values = try self.executeSubquery(il.subquery_sql);
+                defer if (sub_values) |sv| {
+                    for (sv) |v| {
+                        if (v == .text) self.allocator.free(v.text);
+                    }
+                    self.allocator.free(sv);
+                };
+
+                if (sub_values == null) return .{ .integer = 0 };
+                const sv = sub_values.?;
+                for (sv) |sub_val| {
+                    if (Table.compareValues(operand_val, sub_val, .eq)) return .{ .integer = 1 };
+                }
+                return .{ .integer = 0 };
+            },
+            .scalar_subquery => |sq| {
+                const sub_values = try self.executeSubquery(sq.subquery_sql);
+                defer if (sub_values) |sv| {
+                    for (sv) |v| {
+                        if (v == .text) self.allocator.free(v.text);
+                    }
+                    self.allocator.free(sv);
+                };
+
+                if (sub_values == null or sub_values.?.len == 0) return .null_val;
+                const result = sub_values.?[0];
+                // Deep copy text to let caller free uniformly
+                return if (result == .text) .{ .text = try dupeStr(self.allocator, result.text) } else result;
+            },
         }
+    }
+
+    /// Convert Value to boolean (SQLite3 semantics: 0 and NULL are false)
+    fn valueToBool(_: *Database, val: Value) bool {
+        return switch (val) {
+            .integer => |n| n != 0,
+            .text => true,
+            .null_val => false,
+        };
+    }
+
+    /// Free a where_expr tree including subquery SQL buffers
+    fn freeWhereExpr(self: *Database, expr: *const Expr) void {
+        self.freeExprDeep(expr);
+    }
+
+    fn freeExprDeep(self: *Database, expr: *const Expr) void {
+        switch (expr.*) {
+            .binary_op => |bin| {
+                self.freeExprDeep(bin.left);
+                self.freeExprDeep(bin.right);
+            },
+            .aggregate => |agg| {
+                self.freeExprDeep(agg.arg);
+            },
+            .case_when => |cw| {
+                for (cw.conditions) |cond| self.freeExprDeep(cond);
+                self.allocator.free(cw.conditions);
+                for (cw.results) |res| self.freeExprDeep(res);
+                self.allocator.free(cw.results);
+                if (cw.else_result) |er| self.freeExprDeep(er);
+            },
+            .unary_op => |u| {
+                self.freeExprDeep(u.operand);
+            },
+            .in_list => |il| {
+                self.freeExprDeep(il.operand);
+                self.allocator.free(@constCast(il.subquery_sql));
+            },
+            .scalar_subquery => |sq| {
+                self.allocator.free(@constCast(sq.subquery_sql));
+            },
+            else => {},
+        }
+        self.allocator.destroy(@constCast(expr));
     }
 
     fn valueToText(self: *Database, val: Value) []const u8 {
@@ -871,7 +1005,11 @@ pub const Database = struct {
             var matching_rows: std.ArrayList(Row) = .{};
             defer matching_rows.deinit(self.allocator);
             for (table.rows.items) |row| {
-                if (sel.where) |where| {
+                if (sel.where_expr) |we| {
+                    const val = try self.evalExpr(we, &table, row);
+                    defer if (val == .text) self.allocator.free(val.text);
+                    if (!self.valueToBool(val)) continue;
+                } else if (sel.where) |where| {
                     if (!(try self.matchesWhereWithSubquery(&table, row, where))) continue;
                 }
                 try matching_rows.append(self.allocator, row);
@@ -1361,13 +1499,28 @@ pub const Database = struct {
             .select_stmt => |sel| {
                 defer self.allocator.free(sel.columns);
                 defer self.allocator.free(sel.select_exprs);
-                defer self.allocator.free(sel.result_exprs);
+                defer {
+                    for (sel.result_exprs) |e| self.freeExprDeep(e);
+                    self.allocator.free(sel.result_exprs);
+                }
+                defer if (sel.where_expr) |we| self.freeWhereExpr(we);
                 return self.executeSelect(sel);
             },
             .delete => |del| {
+                defer if (del.where_expr) |we| self.freeWhereExpr(we);
                 if (self.tables.getPtr(del.table_name)) |table| {
-                    if (del.where) |where| {
-                        // Delete matching rows (iterate backwards to avoid index issues)
+                    if (del.where_expr) |we| {
+                        var i: usize = table.rows.items.len;
+                        while (i > 0) {
+                            i -= 1;
+                            const val = try self.evalExpr(we, table, table.rows.items[i]);
+                            defer if (val == .text) self.allocator.free(val.text);
+                            if (self.valueToBool(val)) {
+                                table.freeRow(table.rows.items[i]);
+                                _ = table.rows.orderedRemove(i);
+                            }
+                        }
+                    } else if (del.where) |where| {
                         var i: usize = table.rows.items.len;
                         while (i > 0) {
                             i -= 1;
@@ -1388,6 +1541,9 @@ pub const Database = struct {
                 return .{ .err = "table not found" };
             },
             .update => |upd| {
+                defer self.allocator.free(upd.set_columns);
+                defer self.allocator.free(upd.set_values);
+                defer if (upd.where_expr) |we| self.freeWhereExpr(we);
                 if (self.tables.getPtr(upd.table_name)) |table| {
                     // Validate all columns exist
                     var col_indices: std.ArrayList(usize) = .{};
@@ -1400,7 +1556,11 @@ pub const Database = struct {
                     }
 
                     for (table.rows.items) |*row| {
-                        const matches = if (upd.where) |where| table.matchesWhere(row.*, where) else true;
+                        const matches = if (upd.where_expr) |we| blk: {
+                            const val = try self.evalExpr(we, table, row.*);
+                            defer if (val == .text) self.allocator.free(val.text);
+                            break :blk self.valueToBool(val);
+                        } else if (upd.where) |where| table.matchesWhere(row.*, where) else true;
                         if (matches) {
                             // Update each column
                             for (upd.set_columns, upd.set_values, col_indices.items) |col_name, val_str, col_idx| {
