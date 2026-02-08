@@ -114,7 +114,7 @@
 - [x] 差分テスト追加: float format, SUBSTR負数, GROUP BY式, NULL処理, 型変換, 空テーブル, ネスト関数, CASE式, JOIN集約, LIMIT集約, BETWEEN, 文字列操作
 - Differential Test: **140/140 passing**
 
-### Phase 6d-13: SQL機能充実（進行中）
+### Phase 6d-13: SQL機能充実（完了）
 - [x] CREATE VIEW / DROP VIEW（IF NOT EXISTS, IF EXISTS対応）
 - [x] ビューのマテリアライズ（temp_cte_namesパターンでクリーンアップ）
 - [x] FROM句のサブクエリ（導出テーブル）: SELECT * FROM (SELECT ...) alias
@@ -127,6 +127,15 @@
 - [x] 拡張カラム型サポート（VARCHAR, INT, BOOLEAN, BLOB, DECIMAL等）
 - [x] .tables / .schema / .quit REPLコマンド
 - Differential Test: **145/145 passing**
+
+### Phase 6d-14: SQL機能充実（完了）
+- [x] Window running/cumulative aggregates (SUM/AVG/COUNT/MIN/MAX/TOTAL OVER ORDER BY)
+- [x] 暗黙的Window ORDER BYソート（PARTITION BY + ORDER BY）
+- [x] Window関数expression cleanup（order_by/partition_byメモリリーク修正）
+- [x] Math functions (CEIL, FLOOR, SQRT, POWER, LOG, LN, EXP, trig, PI, MOD)
+- [x] RETURNING clause (INSERT/UPDATE/DELETE RETURNING */columns)
+- [x] UNION/INTERSECT/EXCEPT結果のメモリリーク修正（projected_values追跡）
+- Differential Test: **148/148 passing**
 
 ### 次のステップ
 

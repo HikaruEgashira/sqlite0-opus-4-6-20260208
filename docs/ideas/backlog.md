@@ -69,6 +69,9 @@
 - ~~外部キー (FOREIGN KEY)~~ ✓ (構文パース対応)
 - ~~PARTITION BY (Window関数)~~ ✓
 - ~~SUM/AVG OVER (Window集約)~~ ✓
+- ~~Window running aggregates (SUM/AVG OVER ORDER BY)~~ ✓
+- ~~Math functions (CEIL, FLOOR, SQRT, POWER, LOG, etc.)~~ ✓
+- ~~RETURNING clause (INSERT/UPDATE/DELETE)~~ ✓
 - GENERATED COLUMNS
 - ~~UPSERT (ON CONFLICT)~~ ✓
 - ~~Common Table Expressions (WITH/CTE)~~ ✓
