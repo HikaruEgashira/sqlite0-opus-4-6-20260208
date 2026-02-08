@@ -1772,12 +1772,31 @@ pub const Database = struct {
                             try new_rows.append(self.allocator, .{ .values = values });
                         }
                     }
-                    if (!matched and join.join_type == .left) {
+                    if (!matched and (join.join_type == .left)) {
                         var values = try self.allocator.alloc(Value, total_cols);
                         @memcpy(values[0..left_col_count], left_row.values[0..left_col_count]);
                         for (left_col_count..total_cols) |ci| values[ci] = .{ .null_val = {} };
                         try new_values.append(self.allocator, values);
                         try new_rows.append(self.allocator, .{ .values = values });
+                    }
+                }
+                // RIGHT JOIN: also add right rows that didn't match any left row
+                if (join.join_type == .right) {
+                    for (right_rows) |right_row| {
+                        var matched = false;
+                        for (joined_rows.items) |left_row| {
+                            if (compareValuesOrder(left_row.values[ljc], right_row.values[rjc]) == .eq) {
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (!matched) {
+                            var values = try self.allocator.alloc(Value, total_cols);
+                            for (0..left_col_count) |ci| values[ci] = .{ .null_val = {} };
+                            @memcpy(values[left_col_count..total_cols], right_row.values[0..right_col_count]);
+                            try new_values.append(self.allocator, values);
+                            try new_rows.append(self.allocator, .{ .values = values });
+                        }
                     }
                 }
             }

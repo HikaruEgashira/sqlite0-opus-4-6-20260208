@@ -206,6 +206,7 @@ pub const SetOp = enum {
 pub const JoinType = enum {
     inner,
     left,
+    right,
     cross,
 };
 
@@ -734,7 +735,7 @@ pub const Parser = struct {
 
         // Parse optional JOINs (including comma syntax: FROM t1, t2 = CROSS JOIN)
         var joins: std.ArrayList(JoinClause) = .{};
-        while (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_join or self.peek().type == .kw_cross) {
+        while (self.peek().type == .kw_inner or self.peek().type == .kw_left or self.peek().type == .kw_right or self.peek().type == .kw_join or self.peek().type == .kw_cross) {
             const jc = try self.parseJoinClause();
             joins.append(self.allocator, jc) catch return ParseError.OutOfMemory;
         }
@@ -866,6 +867,9 @@ pub const Parser = struct {
         } else if (self.peek().type == .kw_left) {
             _ = self.advance();
             join_type = .left;
+        } else if (self.peek().type == .kw_right) {
+            _ = self.advance();
+            join_type = .right;
         } else if (self.peek().type == .kw_cross) {
             _ = self.advance();
             join_type = .cross;
