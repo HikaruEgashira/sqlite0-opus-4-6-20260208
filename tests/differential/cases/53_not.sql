@@ -1,0 +1,13 @@
+CREATE TABLE t (id INTEGER, name TEXT, val INTEGER);
+INSERT INTO t VALUES (1, 'alice', 10);
+INSERT INTO t VALUES (2, 'bob', 20);
+INSERT INTO t VALUES (3, 'charlie', 30);
+INSERT INTO t VALUES (4, 'dave', 40);
+
+SELECT * FROM t WHERE NOT val = 20;
+
+SELECT * FROM t WHERE NOT (val > 20);
+
+SELECT name FROM t WHERE name NOT LIKE 'a%';
+
+SELECT * FROM t WHERE val NOT BETWEEN 20 AND 30;

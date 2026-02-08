@@ -340,6 +340,10 @@ pub const Database = struct {
                 return switch (u.op) {
                     .is_null => .{ .integer = if (operand_val == .null_val) @as(i64, 1) else 0 },
                     .is_not_null => .{ .integer = if (operand_val != .null_val) @as(i64, 1) else 0 },
+                    .not => {
+                        if (operand_val == .null_val) return .null_val;
+                        return .{ .integer = if (self.valueToBool(operand_val)) @as(i64, 0) else 1 };
+                    },
                 };
             },
             .in_list => |il| {

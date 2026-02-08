@@ -85,6 +85,7 @@ pub const BinOp = enum {
 pub const UnaryOp = enum {
     is_null,
     is_not_null,
+    not,
 };
 
 pub const Expr = union(enum) {
@@ -688,7 +689,7 @@ pub const Parser = struct {
 
     /// Parse logical AND/OR (lowest precedence)
     fn parseLogical(self: *Parser) ParseError!*const Expr {
-        var left = try self.parseComparison();
+        var left = try self.parseNot();
 
         while (true) {
             const op_opt: ?BinOp = switch (self.peek().type) {
@@ -700,11 +701,21 @@ pub const Parser = struct {
             if (op_opt == null) break;
 
             _ = self.advance();
-            const right = try self.parseComparison();
+            const right = try self.parseNot();
             left = try self.allocExpr(.{ .binary_op = .{ .op = op_opt.?, .left = left, .right = right } });
         }
 
         return left;
+    }
+
+    /// Parse NOT prefix operator (between AND/OR and comparison)
+    fn parseNot(self: *Parser) ParseError!*const Expr {
+        if (self.peek().type == .kw_not) {
+            _ = self.advance();
+            const operand = try self.parseNot(); // right-associative
+            return self.allocExpr(.{ .unary_op = .{ .op = .not, .operand = operand } });
+        }
+        return self.parseComparison();
     }
 
     /// Parse comparison operators: =, !=, <, <=, >, >=, LIKE, IS NULL, IS NOT NULL, IN
@@ -724,6 +735,46 @@ pub const Parser = struct {
                 _ = try self.expect(.kw_null);
                 left = try self.allocExpr(.{ .unary_op = .{ .op = .is_null, .operand = left } });
                 continue;
+            }
+
+            // NOT LIKE / NOT GLOB / NOT IN / NOT BETWEEN
+            if (self.peek().type == .kw_not) {
+                const next_pos = self.pos + 1;
+                if (next_pos < self.tokens.len) {
+                    const next_tt = self.tokens[next_pos].type;
+                    if (next_tt == .kw_like or next_tt == .kw_glob or next_tt == .kw_in or next_tt == .kw_between) {
+                        _ = self.advance(); // consume NOT
+                        // Continue the loop - the next iteration will handle the operator
+                        // Then we wrap the result in NOT
+                        // For simplicity, parse the operator directly here
+                        if (self.peek().type == .kw_between) {
+                            _ = self.advance();
+                            const low = try self.parseAddSub();
+                            _ = try self.expect(.kw_and);
+                            const high = try self.parseAddSub();
+                            const ge_expr = try self.allocExpr(.{ .binary_op = .{ .op = .ge, .left = left, .right = low } });
+                            const le_expr = try self.allocExpr(.{ .binary_op = .{ .op = .le, .left = left, .right = high } });
+                            const between_expr = try self.allocExpr(.{ .binary_op = .{ .op = .logical_and, .left = ge_expr, .right = le_expr } });
+                            left = try self.allocExpr(.{ .unary_op = .{ .op = .not, .operand = between_expr } });
+                            continue;
+                        } else if (self.peek().type == .kw_in) {
+                            _ = self.advance();
+                            _ = try self.expect(.lparen);
+                            const sql = try self.extractSubquerySQL();
+                            const in_expr = try self.allocExpr(.{ .in_list = .{ .operand = left, .subquery_sql = sql } });
+                            left = try self.allocExpr(.{ .unary_op = .{ .op = .not, .operand = in_expr } });
+                            continue;
+                        } else {
+                            // NOT LIKE or NOT GLOB
+                            const op: BinOp = if (self.peek().type == .kw_like) .like else .glob;
+                            _ = self.advance();
+                            const right = try self.parseAddSub();
+                            const like_expr = try self.allocExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+                            left = try self.allocExpr(.{ .unary_op = .{ .op = .not, .operand = like_expr } });
+                            continue;
+                        }
+                    }
+                }
             }
 
             // BETWEEN a AND b → left >= a AND left <= b
