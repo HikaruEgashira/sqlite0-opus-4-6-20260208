@@ -413,8 +413,28 @@ pub const Database = struct {
                     if (left_val == .text) self.allocator.free(left_val.text);
                     if (right_val == .text) self.allocator.free(right_val.text);
                 }
-                // NULL propagation
+
+                // For comparison operators, NULL handling is special
+                if (bin.op == .eq or bin.op == .ne or bin.op == .lt or bin.op == .le or bin.op == .gt or bin.op == .ge) {
+                    if (left_val == .null_val or right_val == .null_val) return .null_val;
+
+                    // Perform comparison and return 0 (false) or 1 (true)
+                    const cmp = compareValuesOrder(left_val, right_val);
+                    const cmp_result = switch (bin.op) {
+                        .eq => cmp == .eq,
+                        .ne => cmp != .eq,
+                        .lt => cmp == .lt,
+                        .le => cmp == .lt or cmp == .eq,
+                        .gt => cmp == .gt,
+                        .ge => cmp == .gt or cmp == .eq,
+                        else => false,
+                    };
+                    return .{ .integer = if (cmp_result) 1 else 0 };
+                }
+
+                // For other operators, NULL propagation applies
                 if (left_val == .null_val or right_val == .null_val) return .null_val;
+
                 switch (bin.op) {
                     .concat => {
                         // String concatenation
@@ -439,6 +459,7 @@ pub const Database = struct {
                             else => unreachable,
                         } };
                     },
+                    .eq, .ne, .lt, .le, .gt, .ge => unreachable,
                 }
             },
             .aggregate => {
@@ -1283,26 +1304,37 @@ pub const Database = struct {
             },
             .update => |upd| {
                 if (self.tables.getPtr(upd.table_name)) |table| {
-                    const set_col_idx = table.findColumnIndex(upd.set_column) orelse {
-                        return .{ .err = "column not found" };
-                    };
+                    // Validate all columns exist
+                    var col_indices: std.ArrayList(usize) = .{};
+                    defer col_indices.deinit(self.allocator);
+                    for (upd.set_columns) |col_name| {
+                        const idx = table.findColumnIndex(col_name) orelse {
+                            return .{ .err = "column not found" };
+                        };
+                        col_indices.append(self.allocator, idx) catch return .{ .err = "out of memory" };
+                    }
+
                     for (table.rows.items) |*row| {
                         const matches = if (upd.where) |where| table.matchesWhere(row.*, where) else true;
                         if (matches) {
-                            // Free old text value if needed
-                            switch (row.values[set_col_idx]) {
-                                .text => |t| self.allocator.free(t),
-                                else => {},
-                            }
-                            // Set new value
-                            if (upd.set_value.len >= 2 and upd.set_value[0] == '\'') {
-                                row.values[set_col_idx] = .{ .text = try dupeStr(self.allocator, upd.set_value[1 .. upd.set_value.len - 1]) };
-                            } else {
-                                const num = std.fmt.parseInt(i64, upd.set_value, 10) catch {
-                                    row.values[set_col_idx] = .{ .text = try dupeStr(self.allocator, upd.set_value) };
-                                    continue;
-                                };
-                                row.values[set_col_idx] = .{ .integer = num };
+                            // Update each column
+                            for (upd.set_columns, upd.set_values, col_indices.items) |col_name, val_str, col_idx| {
+                                _ = col_name; // Already validated above
+                                // Free old text value if needed
+                                switch (row.values[col_idx]) {
+                                    .text => |t| self.allocator.free(t),
+                                    else => {},
+                                }
+                                // Set new value
+                                if (val_str.len >= 2 and val_str[0] == '\'') {
+                                    row.values[col_idx] = .{ .text = try dupeStr(self.allocator, val_str[1 .. val_str.len - 1]) };
+                                } else {
+                                    const num = std.fmt.parseInt(i64, val_str, 10) catch {
+                                        row.values[col_idx] = .{ .text = try dupeStr(self.allocator, val_str) };
+                                        continue;
+                                    };
+                                    row.values[col_idx] = .{ .integer = num };
+                                }
                             }
                         }
                     }

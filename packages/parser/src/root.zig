@@ -69,6 +69,12 @@ pub const BinOp = enum {
     mul, // *
     div, // /
     concat, // ||
+    eq, // =
+    ne, // !=
+    lt, // <
+    le, // <=
+    gt, // >
+    ge, // >=
 };
 
 pub const Expr = union(enum) {
@@ -163,8 +169,8 @@ pub const Statement = union(enum) {
 
     pub const Update = struct {
         table_name: []const u8,
-        set_column: []const u8,
-        set_value: []const u8,
+        set_columns: []const []const u8,
+        set_values: []const []const u8,
         where: ?WhereClause,
     };
 
@@ -559,8 +565,35 @@ pub const Parser = struct {
         return ptr;
     }
 
-    /// Parse an expression: handles lowest-precedence operators (+, -, ||)
+    /// Parse an expression: handles comparison operators (lowest precedence)
     pub fn parseExpr(self: *Parser) ParseError!*const Expr {
+        return self.parseComparison();
+    }
+
+    /// Parse comparison operators: =, !=, <, <=, >, >=
+    fn parseComparison(self: *Parser) ParseError!*const Expr {
+        var left = try self.parseAddSub();
+
+        while (true) {
+            const op: BinOp = switch (self.peek().type) {
+                .equals => .eq,
+                .not_equals => .ne,
+                .less_than => .lt,
+                .less_equal => .le,
+                .greater_than => .gt,
+                .greater_equal => .ge,
+                else => break,
+            };
+            _ = self.advance();
+            const right = try self.parseAddSub();
+            left = try self.allocExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+        }
+
+        return left;
+    }
+
+    /// Parse +, -, || (medium precedence)
+    fn parseAddSub(self: *Parser) ParseError!*const Expr {
         var left = try self.parseMulDiv();
 
         while (true) {
@@ -836,12 +869,35 @@ pub const Parser = struct {
         _ = try self.expect(.kw_update);
         const name_tok = try self.expect(.identifier);
         _ = try self.expect(.kw_set);
+
+        var set_columns: std.ArrayList([]const u8) = .{};
+        defer set_columns.deinit(self.allocator);
+        var set_values: std.ArrayList([]const u8) = .{};
+        defer set_values.deinit(self.allocator);
+
+        // Parse first assignment
         const col_tok = try self.expect(.identifier);
+        try set_columns.append(self.allocator, col_tok.lexeme);
         _ = try self.expect(.equals);
         const val_tok = self.advance();
         switch (val_tok.type) {
             .integer_literal, .string_literal, .identifier => {},
             else => return ParseError.UnexpectedToken,
+        }
+        try set_values.append(self.allocator, val_tok.lexeme);
+
+        // Parse additional assignments (comma-separated)
+        while (self.peek().type == .comma) {
+            _ = self.advance(); // consume comma
+            const next_col = try self.expect(.identifier);
+            try set_columns.append(self.allocator, next_col.lexeme);
+            _ = try self.expect(.equals);
+            const next_val = self.advance();
+            switch (next_val.type) {
+                .integer_literal, .string_literal, .identifier => {},
+                else => return ParseError.UnexpectedToken,
+            }
+            try set_values.append(self.allocator, next_val.lexeme);
         }
 
         const where = if (self.peek().type == .kw_where) try self.parseWhereClause() else null;
@@ -849,8 +905,8 @@ pub const Parser = struct {
 
         return Statement{ .update = .{
             .table_name = name_tok.lexeme,
-            .set_column = col_tok.lexeme,
-            .set_value = val_tok.lexeme,
+            .set_columns = try set_columns.toOwnedSlice(self.allocator),
+            .set_values = try set_values.toOwnedSlice(self.allocator),
             .where = where,
         } };
     }
@@ -1048,8 +1104,10 @@ test "parse UPDATE" {
     switch (stmt) {
         .update => |upd| {
             try std.testing.expectEqualStrings("users", upd.table_name);
-            try std.testing.expectEqualStrings("name", upd.set_column);
-            try std.testing.expectEqualStrings("'bob'", upd.set_value);
+            try std.testing.expect(upd.set_columns.len == 1);
+            try std.testing.expectEqualStrings("name", upd.set_columns[0]);
+            try std.testing.expect(upd.set_values.len == 1);
+            try std.testing.expectEqualStrings("'bob'", upd.set_values[0]);
             try std.testing.expect(upd.where != null);
         },
         else => return error.UnexpectedToken,
