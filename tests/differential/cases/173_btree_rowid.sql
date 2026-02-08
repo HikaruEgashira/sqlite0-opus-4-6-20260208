@@ -1,0 +1,10 @@
+CREATE TABLE t (name TEXT);
+INSERT INTO t VALUES ('a');
+INSERT INTO t VALUES ('b');
+INSERT INTO t VALUES ('c');
+SELECT rowid, name FROM t;
+SELECT * FROM t WHERE rowid = 2;
+DELETE FROM t WHERE name = 'a';
+SELECT rowid, name FROM t;
+INSERT INTO t VALUES ('d');
+SELECT rowid, name FROM t;

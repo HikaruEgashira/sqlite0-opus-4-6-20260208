@@ -33,6 +33,10 @@ pub fn evalExpr(self: *Database, expr: *const Expr, tbl: *const Table, row: Row)
         .null_literal => return .null_val,
         .star => return .null_val, // star is not valid in eval context
         .column_ref => |name| {
+            // Handle rowid pseudo-column
+            if (std.ascii.eqlIgnoreCase(name, "rowid")) {
+                return .{ .integer = row.rowid };
+            }
             if (tbl.findColumnIndex(name)) |col_idx| {
                 const val = row.values[col_idx];
                 return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;

@@ -87,6 +87,11 @@ pub const Table = struct {
     }
 
     pub fn matchesSingleCondition(self: *const Table, row: Row, column: []const u8, op: CompOp, value: []const u8) bool {
+        // Handle rowid pseudo-column
+        if (std.ascii.eqlIgnoreCase(column, "rowid")) {
+            const where_val = parseRawValue(value);
+            return compareValues(.{ .integer = row.rowid }, where_val, op);
+        }
         const col_idx = self.findColumnIndex(column) orelse return false;
         const val = row.values[col_idx];
         // Handle IS NULL / IS NOT NULL

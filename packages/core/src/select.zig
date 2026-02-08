@@ -523,9 +523,15 @@ pub fn evaluateExprSelect(self: *Database, sel: Statement.Select, tbl: *const Ta
 }
 
 pub fn projectColumns(self: *Database, sel: Statement.Select, table: *const Table, result_rows: []const Row) !ExecuteResult {
+    // Use sentinel value to indicate rowid pseudo-column
+    const ROWID_SENTINEL: usize = std.math.maxInt(usize);
     var col_indices = try self.allocator.alloc(usize, sel.columns.len);
     defer self.allocator.free(col_indices);
     for (sel.columns, 0..) |sel_col, i| {
+        if (std.ascii.eqlIgnoreCase(sel_col, "rowid")) {
+            col_indices[i] = ROWID_SENTINEL;
+            continue;
+        }
         var found = false;
         for (table.columns, 0..) |tbl_col, j| {
             if (std.mem.eql(u8, sel_col, tbl_col.name)) {
@@ -544,7 +550,11 @@ pub fn projectColumns(self: *Database, sel: Statement.Select, table: *const Tabl
     for (result_rows, 0..) |row, ri| {
         var values = try self.allocator.alloc(Value, sel.columns.len);
         for (col_indices, 0..) |src_idx, dst_idx| {
-            values[dst_idx] = row.values[src_idx];
+            if (src_idx == ROWID_SENTINEL) {
+                values[dst_idx] = .{ .integer = row.rowid };
+            } else {
+                values[dst_idx] = row.values[src_idx];
+            }
         }
         proj_values[ri] = values;
         proj_rows[ri] = .{ .values = values };
