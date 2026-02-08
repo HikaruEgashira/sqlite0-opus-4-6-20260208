@@ -2194,19 +2194,94 @@ pub const Database = struct {
     }
 
     fn formatFloat(self: *Database, f: f64) Value {
-        // Use {d} format and ensure decimal point is present
-        const txt = std.fmt.allocPrint(self.allocator, "{d}", .{f}) catch return .null_val;
-        // Check if result has a decimal point
-        for (txt) |c| {
-            if (c == '.' or c == 'e' or c == 'E') return .{ .text = txt };
+        // SQLite uses %.15g format (15 significant digits, trailing zeros removed)
+        // We use a C-compatible sprintf approach via Zig
+        var buf: [64]u8 = undefined;
+
+        // Format with full precision first
+        const full = std.fmt.bufPrint(&buf, "{d}", .{f}) catch return .null_val;
+
+        // Count significant digits
+        var sig_count: usize = 0;
+        var started = false;
+        var has_dot = false;
+        for (full) |c| {
+            if (c == '-') continue;
+            if (c == '.') {
+                has_dot = true;
+                continue;
+            }
+            if (c == 'e' or c == 'E') break;
+            if (c != '0') started = true;
+            if (started) sig_count += 1;
         }
-        // Append ".0" to make it look like a float
-        const with_dot = std.fmt.allocPrint(self.allocator, "{s}.0", .{txt}) catch {
-            self.allocator.free(txt);
-            return .null_val;
-        };
-        self.allocator.free(txt);
-        return .{ .text = with_dot };
+
+        if (sig_count <= 15) {
+            // No truncation needed
+            if (!has_dot) {
+                const txt = std.fmt.allocPrint(self.allocator, "{s}.0", .{full}) catch return .null_val;
+                return .{ .text = txt };
+            }
+            const txt = self.allocator.alloc(u8, full.len) catch return .null_val;
+            @memcpy(txt, full);
+            return .{ .text = txt };
+        }
+
+        // Need to truncate: rebuild with 15 significant digits via rounding
+        // Strategy: find position to truncate, round last digit
+        var result_buf: [64]u8 = undefined;
+        var ri: usize = 0;
+        var sig: usize = 0;
+        var s = false;
+        for (full, 0..) |c, i| {
+            if (c == '-' or c == '.') {
+                result_buf[ri] = c;
+                ri += 1;
+                continue;
+            }
+            if (c == 'e' or c == 'E') {
+                // Copy exponent
+                const rest = full[i..];
+                @memcpy(result_buf[ri .. ri + rest.len], rest);
+                ri += rest.len;
+                break;
+            }
+            if (c != '0') s = true;
+            if (s) sig += 1;
+            if (sig <= 15) {
+                result_buf[ri] = c;
+                ri += 1;
+            } else if (sig == 16) {
+                // Use this digit for rounding
+                if (c >= '5') {
+                    // Round up last digit
+                    var j = ri;
+                    while (j > 0) {
+                        j -= 1;
+                        if (result_buf[j] == '.') continue;
+                        if (result_buf[j] == '-') break;
+                        if (result_buf[j] < '9') {
+                            result_buf[j] += 1;
+                            break;
+                        } else {
+                            result_buf[j] = '0';
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        // Remove trailing zeros after decimal point
+        var end = ri;
+        if (std.mem.indexOfScalar(u8, result_buf[0..ri], '.')) |dot_pos| {
+            while (end > dot_pos + 2 and result_buf[end - 1] == '0') {
+                end -= 1;
+            }
+        }
+        const txt = self.allocator.alloc(u8, end) catch return .null_val;
+        @memcpy(txt, result_buf[0..end]);
+        return .{ .text = txt };
     }
 
     fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row, separator: []const u8, is_distinct: bool) !Value {
@@ -2318,26 +2393,7 @@ pub const Database = struct {
                 }
                 if (cnt == 0) return .null_val;
                 const avg = total / @as(f64, @floatFromInt(cnt));
-                // Format as SQLite3-compatible float string
-                var buf: [64]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{avg}) catch return error.OutOfMemory;
-                // Ensure decimal point (SQLite3 always outputs float for AVG)
-                const has_dot = blk: {
-                    for (slice) |ch| {
-                        if (ch == '.') break :blk true;
-                    }
-                    break :blk false;
-                };
-                if (has_dot) {
-                    return .{ .text = try dupeStr(self.allocator, slice) };
-                } else {
-                    // Append ".0"
-                    var dot_buf: [66]u8 = undefined;
-                    @memcpy(dot_buf[0..slice.len], slice);
-                    dot_buf[slice.len] = '.';
-                    dot_buf[slice.len + 1] = '0';
-                    return .{ .text = try dupeStr(self.allocator, dot_buf[0 .. slice.len + 2]) };
-                }
+                return self.formatFloat(avg);
             },
             .min => {
                 if (rows.len == 0) return .null_val;
