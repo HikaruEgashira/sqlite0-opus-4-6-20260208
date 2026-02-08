@@ -738,18 +738,12 @@ pub const Parser = struct {
             };
         }
 
-        // Parse WHERE clause: use Expr-based parsing
-        // INNER/LEFT JOIN uses old WhereClause for table-qualified resolution
-        // CROSS JOIN and non-JOIN use parseWhereExpr
-        var where: ?WhereClause = null;
+        // Parse WHERE clause: always use Expr-based parsing
+        const where: ?WhereClause = null;
         var where_expr: ?*const Expr = null;
         if (self.peek().type == .kw_where) {
-            if (join != null and join.?.join_type != .cross) {
-                where = try self.parseWhereClause();
-            } else {
-                _ = self.advance(); // consume WHERE
-                where_expr = try self.parseWhereExpr();
-            }
+            _ = self.advance(); // consume WHERE
+            where_expr = try self.parseWhereExpr();
         }
 
         // Parse optional GROUP BY

@@ -1507,38 +1507,7 @@ pub const Database = struct {
         }
         } // end else (non-cross join)
 
-        // Apply WHERE filter on joined rows
-        if (sel.where) |where| {
-            // Find column index in joined schema
-            var col_idx: ?usize = null;
-            for (left_table.columns, 0..) |col, i| {
-                if (std.mem.eql(u8, where.column, col.name)) {
-                    col_idx = i;
-                    break;
-                }
-            }
-            if (col_idx == null) {
-                for (right_table.columns, 0..) |col, i| {
-                    if (std.mem.eql(u8, where.column, col.name)) {
-                        col_idx = left_col_count + i;
-                        break;
-                    }
-                }
-            }
-            if (col_idx) |ci| {
-                const where_val = Table.parseRawValue(where.value);
-                var i: usize = joined_rows.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    if (!Table.compareValues(joined_rows.items[i].values[ci], where_val, where.op)) {
-                        self.allocator.free(joined_values.items[i]);
-                        _ = joined_rows.orderedRemove(i);
-                        _ = joined_values.orderedRemove(i);
-                    }
-                }
-            }
-        }
-        // Apply WHERE filter using where_expr (for CROSS JOIN and expression-based WHERE)
+        // Apply WHERE filter using where_expr
         if (sel.where_expr) |we| {
             // Build a temporary combined-column Table for evalExpr
             var combined_cols = try self.allocator.alloc(Column, total_cols);
