@@ -220,6 +220,7 @@ pub const Statement = union(enum) {
         values: []const []const u8, // first row values (or empty for INSERT SELECT)
         extra_rows: []const []const []const u8, // additional rows for multi-row INSERT
         select_sql: ?[]const u8 = null, // INSERT INTO ... SELECT (raw SQL)
+        replace_mode: bool = false, // REPLACE INTO behavior
     };
 
     pub const Select = struct {
@@ -309,6 +310,7 @@ pub const Parser = struct {
         return switch (tok.type) {
             .kw_create => self.parseCreate(),
             .kw_insert => self.parseInsert(),
+            .kw_replace => self.parseReplace(),
             .kw_select => self.parseSelect(),
             .kw_delete => self.parseDelete(),
             .kw_update => self.parseUpdate(),
@@ -463,6 +465,33 @@ pub const Parser = struct {
                 .table_name = name_tok.lexeme,
                 .values = first_row,
                 .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            },
+        };
+    }
+
+    fn parseReplace(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_replace);
+        _ = try self.expect(.kw_into);
+        const name_tok = try self.expect(.identifier);
+
+        _ = try self.expect(.kw_values);
+        const first_row = try self.parseValueTuple();
+
+        var extra_rows: std.ArrayList([]const []const u8) = .{};
+        while (self.peek().type == .comma) {
+            _ = self.advance();
+            const row = try self.parseValueTuple();
+            extra_rows.append(self.allocator, row) catch return ParseError.OutOfMemory;
+        }
+
+        _ = try self.expect(.semicolon);
+
+        return Statement{
+            .insert = .{
+                .table_name = name_tok.lexeme,
+                .values = first_row,
+                .extra_rows = extra_rows.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .replace_mode = true,
             },
         };
     }
@@ -1120,6 +1149,29 @@ pub const Parser = struct {
         if (tok.type == .star) {
             _ = self.advance();
             return self.allocExpr(.{ .star = {} });
+        }
+
+        // REPLACE() scalar function (kw_replace followed by lparen)
+        if (tok.type == .kw_replace and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
+            _ = self.advance(); // consume REPLACE
+            _ = self.advance(); // consume '('
+            var args: std.ArrayList(*const Expr) = .{};
+            if (self.peek().type != .rparen) {
+                while (true) {
+                    const arg = try self.parseExpr();
+                    args.append(self.allocator, arg) catch return ParseError.OutOfMemory;
+                    if (self.peek().type == .comma) {
+                        _ = self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            _ = try self.expect(.rparen);
+            return self.allocExpr(.{ .scalar_func = .{
+                .func = .replace_fn,
+                .args = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+            } });
         }
 
         // CAST(expr AS type) expression

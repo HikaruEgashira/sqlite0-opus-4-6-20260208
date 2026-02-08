@@ -642,6 +642,35 @@ pub const Database = struct {
         }
     }
 
+    /// REPLACE INTO: delete existing row with matching PK, then insert
+    fn replaceRow(self: *Database, table: *Table, raw_values: []const []const u8) void {
+        // Find primary key column index
+        var pk_idx: ?usize = null;
+        for (table.columns, 0..) |col, i| {
+            if (col.is_primary_key) {
+                pk_idx = i;
+                break;
+            }
+        }
+        if (pk_idx) |pidx| {
+            if (pidx < raw_values.len) {
+                const pk_val: Value = if (std.mem.eql(u8, raw_values[pidx], "NULL")) .null_val else Table.parseRawValue(raw_values[pidx]);
+                var i: usize = table.storage().len();
+                while (i > 0) {
+                    i -= 1;
+                    const rows = table.storage().scan();
+                    if (pidx < rows[i].values.len) {
+                        if (self.valuesEqualUnion(rows[i].values[pidx], pk_val)) {
+                            table.freeRow(rows[i]);
+                            _ = table.storage().orderedRemove(i);
+                        }
+                    }
+                }
+            }
+        }
+        table.insertRow(raw_values) catch {};
+    }
+
     /// Convert Value to boolean (SQLite3 semantics: 0 and NULL are false)
     fn valueToBool(_: *Database, val: Value) bool {
         return switch (val) {
@@ -1879,10 +1908,17 @@ pub const Database = struct {
                     if (ins.select_sql) |select_sql| {
                         return self.executeInsertSelect(table, select_sql);
                     }
-                    try table.insertRow(ins.values);
-                    // Insert additional rows
+                    if (ins.replace_mode) {
+                        self.replaceRow(table, ins.values);
+                    } else {
+                        try table.insertRow(ins.values);
+                    }
                     for (ins.extra_rows) |row_values| {
-                        try table.insertRow(row_values);
+                        if (ins.replace_mode) {
+                            self.replaceRow(table, row_values);
+                        } else {
+                            try table.insertRow(row_values);
+                        }
                     }
                     return .ok;
                 }
