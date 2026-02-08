@@ -133,6 +133,7 @@ pub const Expr = union(enum) {
         func: AggFunc,
         arg: *const Expr, // inner expression (column_ref or star)
         separator: []const u8 = ",", // for GROUP_CONCAT
+        distinct: bool = false, // for COUNT(DISTINCT col)
     },
     case_when: struct {
         conditions: []const *const Expr,  // WHEN conditions
@@ -171,6 +172,7 @@ pub const SelectExpr = union(enum) {
         func: AggFunc,
         arg: []const u8, // column name or "*"
         separator: []const u8 = ",", // for GROUP_CONCAT
+        distinct: bool = false, // for COUNT(DISTINCT col)
     },
     expr: *const Expr,
 };
@@ -627,7 +629,7 @@ pub const Parser = struct {
 
                 // Also populate legacy columns/select_exprs for backward compat
                 if (exprAsAggregate(expr)) |agg| {
-                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = agg.func, .arg = agg.arg, .separator = agg.separator } }) catch return ParseError.OutOfMemory;
+                    select_exprs.append(self.allocator, .{ .aggregate = .{ .func = agg.func, .arg = agg.arg, .separator = agg.separator, .distinct = agg.distinct } }) catch return ParseError.OutOfMemory;
                 } else if (exprAsColumnName(expr)) |name| {
                     columns.append(self.allocator, name) catch return ParseError.OutOfMemory;
                     select_exprs.append(self.allocator, .{ .column = name }) catch return ParseError.OutOfMemory;
@@ -1113,6 +1115,9 @@ pub const Parser = struct {
         if (isAggFunc(tok.type)) |func| {
             _ = self.advance();
             _ = try self.expect(.lparen);
+            // Check for DISTINCT keyword
+            const is_distinct = self.peek().type == .kw_distinct;
+            if (is_distinct) _ = self.advance();
             const arg_tok = self.peek();
             const arg_expr = if (arg_tok.type == .star) blk: {
                 _ = self.advance();
@@ -1135,7 +1140,7 @@ pub const Parser = struct {
                 } });
             }
             _ = try self.expect(.rparen);
-            return self.allocExpr(.{ .aggregate = .{ .func = func, .arg = arg_expr } });
+            return self.allocExpr(.{ .aggregate = .{ .func = func, .arg = arg_expr, .distinct = is_distinct } });
         }
 
         // Parenthesized expression or scalar subquery
@@ -1283,7 +1288,7 @@ pub const Parser = struct {
     }
 
     /// Helper: check if Expr is a simple aggregate and extract func/arg
-    pub fn exprAsAggregate(expr: *const Expr) ?struct { func: AggFunc, arg: []const u8, separator: []const u8 } {
+    pub fn exprAsAggregate(expr: *const Expr) ?struct { func: AggFunc, arg: []const u8, separator: []const u8, distinct: bool } {
         return switch (expr.*) {
             .aggregate => |agg| {
                 const arg_name: []const u8 = switch (agg.arg.*) {
@@ -1291,7 +1296,7 @@ pub const Parser = struct {
                     .star => "*",
                     else => return null,
                 };
-                return .{ .func = agg.func, .arg = arg_name, .separator = agg.separator };
+                return .{ .func = agg.func, .arg = arg_name, .separator = agg.separator, .distinct = agg.distinct };
             },
             else => null,
         };

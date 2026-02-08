@@ -825,12 +825,44 @@ pub const Database = struct {
         }
     }
 
-    fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row, separator: []const u8) !Value {
+    fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row, separator: []const u8, is_distinct: bool) !Value {
         if (func == .count) {
             if (std.mem.eql(u8, arg, "*")) {
                 return .{ .integer = @intCast(rows.len) };
             }
             const col_idx = tbl.findColumnIndex(arg) orelse return error.UnexpectedToken;
+            if (is_distinct) {
+                // COUNT(DISTINCT col): count unique non-null values
+                var seen_ints: std.ArrayList(i64) = .{};
+                defer seen_ints.deinit(self.allocator);
+                var seen_texts: std.ArrayList([]const u8) = .{};
+                defer seen_texts.deinit(self.allocator);
+                var cnt: i64 = 0;
+                for (rows) |row| {
+                    const val = row.values[col_idx];
+                    if (val == .null_val) continue;
+                    if (val == .integer) {
+                        var found = false;
+                        for (seen_ints.items) |s| {
+                            if (s == val.integer) { found = true; break; }
+                        }
+                        if (!found) {
+                            seen_ints.append(self.allocator, val.integer) catch {};
+                            cnt += 1;
+                        }
+                    } else if (val == .text) {
+                        var found = false;
+                        for (seen_texts.items) |s| {
+                            if (std.mem.eql(u8, s, val.text)) { found = true; break; }
+                        }
+                        if (!found) {
+                            seen_texts.append(self.allocator, val.text) catch {};
+                            cnt += 1;
+                        }
+                    }
+                }
+                return .{ .integer = cnt };
+            }
             var cnt: i64 = 0;
             for (rows) |row| {
                 if (row.values[col_idx] != .null_val) cnt += 1;
@@ -961,7 +993,7 @@ pub const Database = struct {
         for (sel.select_exprs, 0..) |expr, i| {
             switch (expr) {
                 .aggregate => |agg| {
-                    values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows, agg.separator);
+                    values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows, agg.separator, agg.distinct);
                 },
                 .column => |col_name| {
                     const col_idx = tbl.findColumnIndex(col_name) orelse return .{ .err = "column not found" };
@@ -973,7 +1005,7 @@ pub const Database = struct {
                 },
                 .expr => |e| {
                     if (parser.Parser.exprAsAggregate(e)) |agg| {
-                        values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows, agg.separator);
+                        values[i] = try self.computeAgg(agg.func, agg.arg, tbl, rows, agg.separator, agg.distinct);
                     } else if (rows.len > 0) {
                         values[i] = try self.evalExpr(e, tbl, rows[0]);
                     } else {
@@ -1035,7 +1067,7 @@ pub const Database = struct {
             for (sel.select_exprs, 0..) |expr, ei| {
                 switch (expr) {
                     .aggregate => |agg| {
-                        values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator);
+                        values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator, agg.distinct);
                     },
                     .column => |col_name| {
                         const col_idx = tbl.findColumnIndex(col_name) orelse return .{ .err = "column not found" };
@@ -1043,7 +1075,7 @@ pub const Database = struct {
                     },
                     .expr => |e| {
                         if (parser.Parser.exprAsAggregate(e)) |agg| {
-                            values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator);
+                            values[ei] = try self.computeAgg(agg.func, agg.arg, tbl, grp, agg.separator, agg.distinct);
                         } else if (grp.len > 0) {
                             values[ei] = try self.evalExpr(e, tbl, grp[0]);
                         } else {
