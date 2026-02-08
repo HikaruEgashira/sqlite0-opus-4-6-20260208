@@ -1,0 +1,14 @@
+CREATE TABLE items (name TEXT, price INTEGER);
+INSERT INTO items VALUES ('apple', 100);
+INSERT INTO items VALUES ('banana', 50);
+INSERT INTO items VALUES ('cherry', 200);
+INSERT INTO items VALUES ('date', 75);
+SELECT rowid, name, price FROM items;
+SELECT rowid, name FROM items WHERE rowid >= 2 AND rowid <= 3;
+UPDATE items SET price = price * 2 WHERE rowid = 1;
+SELECT rowid, name, price FROM items;
+DELETE FROM items WHERE rowid = 3;
+SELECT rowid, name, price FROM items;
+INSERT INTO items VALUES ('elderberry', 300);
+SELECT rowid, name, price FROM items;
+SELECT last_insert_rowid();
