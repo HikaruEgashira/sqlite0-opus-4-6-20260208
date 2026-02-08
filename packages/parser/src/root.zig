@@ -176,6 +176,7 @@ pub const Statement = union(enum) {
     pub const CreateTable = struct {
         table_name: []const u8,
         columns: []const ColumnDef,
+        if_not_exists: bool = false,
     };
 
     pub const Insert = struct {
@@ -225,6 +226,7 @@ pub const Statement = union(enum) {
 
     pub const DropTable = struct {
         table_name: []const u8,
+        if_exists: bool = false,
     };
 
     pub const AlterTable = union(enum) {
@@ -309,12 +311,19 @@ pub const Parser = struct {
         if (self.peek().type == .kw_index) {
             return self.parseCreateIndex();
         }
-        // Default: CREATE TABLE
+        // Default: CREATE TABLE [IF NOT EXISTS]
         _ = try self.expect(.kw_table);
-        return self.parseCreateTableBody();
+        var if_not_exists = false;
+        if (self.peek().type == .kw_if) {
+            _ = self.advance();
+            _ = try self.expect(.kw_not);
+            _ = try self.expect(.kw_exists);
+            if_not_exists = true;
+        }
+        return self.parseCreateTableBody(if_not_exists);
     }
 
-    fn parseCreateTableBody(self: *Parser) ParseError!Statement {
+    fn parseCreateTableBody(self: *Parser, if_not_exists: bool) ParseError!Statement {
         // CREATE and TABLE already consumed by parseCreate
         const name_tok = try self.expect(.identifier);
         _ = try self.expect(.lparen);
@@ -357,6 +366,7 @@ pub const Parser = struct {
             .create_table = .{
                 .table_name = name_tok.lexeme,
                 .columns = columns.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory,
+                .if_not_exists = if_not_exists,
             },
         };
     }
@@ -1261,11 +1271,18 @@ pub const Parser = struct {
     fn parseDropTable(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_drop);
         _ = try self.expect(.kw_table);
+        var if_exists = false;
+        if (self.peek().type == .kw_if) {
+            _ = self.advance();
+            _ = try self.expect(.kw_exists);
+            if_exists = true;
+        }
         const name_tok = try self.expect(.identifier);
         _ = try self.expect(.semicolon);
 
         return Statement{ .drop_table = .{
             .table_name = name_tok.lexeme,
+            .if_exists = if_exists,
         } };
     }
 

@@ -1526,6 +1526,9 @@ pub const Database = struct {
         switch (stmt) {
             .create_table => |ct| {
                 defer self.allocator.free(ct.columns);
+                if (ct.if_not_exists and self.tables.contains(ct.table_name)) {
+                    return .ok;
+                }
                 const table_name = try dupeStr(self.allocator, ct.table_name);
                 var columns = try self.allocator.alloc(Column, ct.columns.len);
                 for (ct.columns, 0..) |col, i| {
@@ -1666,6 +1669,7 @@ pub const Database = struct {
                     table.deinit();
                     return .ok;
                 }
+                if (dt.if_exists) return .ok;
                 return .{ .err = "table not found" };
             },
             .begin => {

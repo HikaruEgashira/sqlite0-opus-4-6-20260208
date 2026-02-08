@@ -64,6 +64,8 @@ pub const TokenType = enum {
     kw_except,
     kw_glob,
     kw_between,
+    kw_if,
+    kw_exists,
 
     // Literals
     integer_literal,
@@ -294,6 +296,8 @@ pub const Tokenizer = struct {
             .{ "EXCEPT", TokenType.kw_except },
             .{ "GLOB", TokenType.kw_glob },
             .{ "BETWEEN", TokenType.kw_between },
+            .{ "IF", TokenType.kw_if },
+            .{ "EXISTS", TokenType.kw_exists },
         };
 
         inline for (keywords) |entry| {
