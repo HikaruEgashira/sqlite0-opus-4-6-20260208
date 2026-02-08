@@ -550,6 +550,17 @@ pub const Parser = struct {
         var columns: std.ArrayList(ColumnDef) = .{};
 
         while (true) {
+            // Handle table-level constraints (FOREIGN KEY, UNIQUE, PRIMARY KEY, CHECK)
+            if (self.peek().type == .kw_foreign or self.peek().type == .kw_unique or
+                self.peek().type == .kw_primary or self.peek().type == .kw_check)
+            {
+                try self.skipTableConstraint();
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                    continue;
+                }
+                break;
+            }
             const col_name = try self.expect(.identifier);
             const col_type_tok = self.advance();
             const col_type_str: []const u8 = switch (col_type_tok.type) {
@@ -607,6 +618,17 @@ pub const Parser = struct {
                         }
                     }
                     _ = try self.expect(.rparen);
+                } else if (self.peek().type == .kw_unique) {
+                    _ = self.advance(); // skip UNIQUE column constraint
+                } else if (self.peek().type == .kw_references) {
+                    // REFERENCES table(col) — parse and skip
+                    _ = self.advance();
+                    _ = try self.expect(.identifier); // table name
+                    if (self.peek().type == .lparen) {
+                        _ = self.advance();
+                        _ = try self.expect(.identifier); // column name
+                        _ = try self.expect(.rparen);
+                    }
                 } else break;
             }
 
@@ -637,6 +659,48 @@ pub const Parser = struct {
                 .if_not_exists = if_not_exists,
             },
         };
+    }
+
+    /// Skip a table-level constraint: FOREIGN KEY(...) REFERENCES ...,
+    /// UNIQUE(...), PRIMARY KEY(...), CHECK(...)
+    fn skipTableConstraint(self: *Parser) ParseError!void {
+        const tok = self.peek().type;
+        if (tok == .kw_foreign) {
+            // FOREIGN KEY(col1, ...) REFERENCES table(col1, ...)
+            _ = self.advance(); // FOREIGN
+            _ = try self.expect(.kw_key); // KEY
+            try self.skipParenthesized(); // (col list)
+            _ = try self.expect(.kw_references); // REFERENCES
+            _ = try self.expect(.identifier); // table name
+            if (self.peek().type == .lparen) {
+                try self.skipParenthesized(); // (col list)
+            }
+        } else if (tok == .kw_unique) {
+            _ = self.advance(); // UNIQUE
+            if (self.peek().type == .lparen) {
+                try self.skipParenthesized(); // (col list)
+            }
+        } else if (tok == .kw_primary) {
+            _ = self.advance(); // PRIMARY
+            _ = try self.expect(.kw_key); // KEY
+            if (self.peek().type == .lparen) {
+                try self.skipParenthesized(); // (col list)
+            }
+        } else if (tok == .kw_check) {
+            _ = self.advance(); // CHECK
+            try self.skipParenthesized(); // (expr)
+        }
+    }
+
+    /// Skip a parenthesized token group, handling nested parens
+    fn skipParenthesized(self: *Parser) ParseError!void {
+        _ = try self.expect(.lparen);
+        var depth: usize = 1;
+        while (self.pos < self.tokens.len and depth > 0) {
+            if (self.tokens[self.pos].type == .lparen) depth += 1;
+            if (self.tokens[self.pos].type == .rparen) depth -= 1;
+            self.pos += 1;
+        }
     }
 
     fn parseCreateView(self: *Parser) ParseError!Statement {
