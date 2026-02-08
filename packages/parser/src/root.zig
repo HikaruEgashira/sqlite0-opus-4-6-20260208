@@ -1496,15 +1496,31 @@ pub const Parser = struct {
             var results: std.ArrayList(*const Expr) = .{};
             defer results.deinit(self.allocator);
 
+            // Check for simple CASE form: CASE expr WHEN val ...
+            // vs searched CASE form: CASE WHEN cond ...
+            var operand: ?*const Expr = null;
+            if (self.peek().type != .kw_when) {
+                operand = try self.parseExpr();
+            }
+
             // Parse WHEN ... THEN ... pairs
             while (self.peek().type == .kw_when) {
                 _ = self.advance();
-                const cond = try self.parseExpr();
+                const val_or_cond = try self.parseExpr();
+                // For simple CASE, desugar to: WHEN operand = val
+                const cond = if (operand) |op| blk: {
+                    // Clone operand for each WHEN to avoid double-free
+                    const op_clone = try self.allocExpr(op.*);
+                    break :blk try self.allocExpr(.{ .binary_op = .{ .op = .eq, .left = op_clone, .right = val_or_cond } });
+                } else val_or_cond;
                 try conditions.append(self.allocator, cond);
                 _ = try self.expect(.kw_then);
                 const result = try self.parseExpr();
                 try results.append(self.allocator, result);
             }
+
+            // Free the original operand (each WHEN has its own clone)
+            if (operand) |op| self.allocator.destroy(@constCast(op));
 
             // Parse optional ELSE
             const else_result = if (self.peek().type == .kw_else) blk: {
