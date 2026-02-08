@@ -386,6 +386,27 @@ pub const Database = struct {
             .scalar_func => |sf| {
                 return self.evalScalarFunc(sf.func, sf.args, tbl, row);
             },
+            .cast => |c| {
+                const val = try self.evalExpr(c.operand, tbl, row);
+                switch (c.target_type) {
+                    .integer => {
+                        if (val == .integer) return val;
+                        if (val == .null_val) return .null_val;
+                        // text -> integer
+                        const text = val.text;
+                        defer self.allocator.free(text);
+                        const n = std.fmt.parseInt(i64, text, 10) catch return .{ .integer = 0 };
+                        return .{ .integer = n };
+                    },
+                    .text => {
+                        if (val == .text) return val;
+                        if (val == .null_val) return .null_val;
+                        // integer -> text
+                        const text = self.valueToText(val);
+                        return .{ .text = text };
+                    },
+                }
+            },
         }
     }
 
@@ -664,6 +685,9 @@ pub const Database = struct {
             .scalar_func => |sf| {
                 for (sf.args) |arg| self.freeExprDeep(arg);
                 self.allocator.free(sf.args);
+            },
+            .cast => |c| {
+                self.freeExprDeep(c.operand);
             },
             else => {},
         }

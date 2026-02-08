@@ -147,6 +147,15 @@ pub const Expr = union(enum) {
         func: ScalarFunc,
         args: []const *const Expr,
     },
+    cast: struct {
+        operand: *const Expr,
+        target_type: CastType,
+    },
+};
+
+pub const CastType = enum {
+    integer,
+    text,
 };
 
 pub const SelectExpr = union(enum) {
@@ -1113,6 +1122,25 @@ pub const Parser = struct {
             return self.allocExpr(.{ .star = {} });
         }
 
+        // CAST(expr AS type) expression
+        if (tok.type == .identifier and std.ascii.eqlIgnoreCase(tok.lexeme, "CAST") and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
+            _ = self.advance(); // consume CAST
+            _ = self.advance(); // consume '('
+            const operand = try self.parseExpr();
+            _ = try self.expect(.kw_as);
+            const type_tok = self.advance();
+            const target_type: CastType = if (type_tok.type == .kw_integer)
+                .integer
+            else if (type_tok.type == .kw_text)
+                .text
+            else if (type_tok.type == .identifier and std.ascii.eqlIgnoreCase(type_tok.lexeme, "REAL"))
+                .integer // treat REAL as integer for now
+            else
+                return ParseError.UnexpectedToken;
+            _ = try self.expect(.rparen);
+            return self.allocExpr(.{ .cast = .{ .operand = operand, .target_type = target_type } });
+        }
+
         // Scalar function call: identifier followed by '('
         if (tok.type == .identifier and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .lparen) {
             if (classifyScalarFunc(tok.lexeme)) |func| {
@@ -1204,6 +1232,9 @@ pub const Parser = struct {
                     freeExpr(allocator, arg);
                 }
                 allocator.free(sf.args);
+            },
+            .cast => |c| {
+                freeExpr(allocator, c.operand);
             },
             else => {},
         }

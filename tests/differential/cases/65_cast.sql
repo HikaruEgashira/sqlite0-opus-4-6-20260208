@@ -1,0 +1,24 @@
+CREATE TABLE t1 (id INTEGER, name TEXT, val INTEGER);
+INSERT INTO t1 VALUES (1, '42', 10);
+INSERT INTO t1 VALUES (2, 'hello', 20);
+INSERT INTO t1 VALUES (3, '100', 30);
+
+-- CAST text to integer
+SELECT CAST('123' AS INTEGER);
+SELECT CAST('0' AS INTEGER);
+
+-- CAST integer to text
+SELECT CAST(456 AS TEXT);
+
+-- CAST column text to integer
+SELECT id, CAST(name AS INTEGER) FROM t1 ORDER BY id;
+
+-- CAST column integer to text
+SELECT id, CAST(val AS TEXT) FROM t1 ORDER BY id;
+
+-- CAST NULL
+SELECT CAST(NULL AS INTEGER);
+SELECT CAST(NULL AS TEXT);
+
+-- CAST in expression
+SELECT CAST('10' AS INTEGER) + 5;
