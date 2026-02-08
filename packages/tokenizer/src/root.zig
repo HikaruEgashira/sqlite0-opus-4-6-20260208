@@ -86,6 +86,7 @@ pub const TokenType = enum {
     kw_partition,
     kw_natural,
     kw_with,
+    kw_pragma,
 
     // Literals
     integer_literal,
@@ -396,6 +397,7 @@ pub const Tokenizer = struct {
             .{ "PARTITION", TokenType.kw_partition },
             .{ "NATURAL", TokenType.kw_natural },
             .{ "WITH", TokenType.kw_with },
+            .{ "PRAGMA", TokenType.kw_pragma },
         };
 
         inline for (keywords) |entry| {

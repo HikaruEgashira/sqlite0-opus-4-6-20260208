@@ -310,9 +310,15 @@ pub const Statement = union(enum) {
     with_cte: WithCTE,
     create_view: CreateView,
     drop_view: DropView,
+    pragma: Pragma,
     begin: void,
     commit: void,
     rollback: void,
+
+    pub const Pragma = struct {
+        name: []const u8, // e.g., "table_info"
+        arg: ?[]const u8 = null, // e.g., table name for table_info
+    };
 
     pub const CreateTable = struct {
         table_name: []const u8,
@@ -473,6 +479,7 @@ pub const Parser = struct {
             .kw_update => self.parseUpdate(),
             .kw_drop => self.parseDropTable(),
             .kw_alter => self.parseAlterTable(),
+            .kw_pragma => self.parsePragma(),
             .kw_begin => self.parseBegin(),
             .kw_commit => self.parseCommit(),
             .kw_rollback => self.parseRollback(),
@@ -1210,13 +1217,21 @@ pub const Parser = struct {
             }
             // Parse optional ORDER BY for table-less SELECT
             const tl_order_by: ?OrderByClause = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
-            // Parse optional LIMIT/OFFSET
+            // Parse optional LIMIT [offset,] count / LIMIT count OFFSET offset
             var tl_limit: ?i64 = null;
             var tl_offset: ?i64 = null;
             if (self.peek().type == .kw_limit) {
                 _ = self.advance();
                 const lim_tok = try self.expect(.integer_literal);
-                tl_limit = std.fmt.parseInt(i64, lim_tok.lexeme, 10) catch 0;
+                const first_val = std.fmt.parseInt(i64, lim_tok.lexeme, 10) catch 0;
+                if (self.peek().type == .comma) {
+                    _ = self.advance();
+                    const second_tok = try self.expect(.integer_literal);
+                    tl_offset = first_val;
+                    tl_limit = std.fmt.parseInt(i64, second_tok.lexeme, 10) catch 0;
+                } else {
+                    tl_limit = first_val;
+                }
             }
             if (self.peek().type == .kw_offset) {
                 _ = self.advance();
@@ -1311,17 +1326,25 @@ pub const Parser = struct {
         // Parse optional ORDER BY
         const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
 
-        // Parse optional LIMIT
+        // Parse optional LIMIT [offset,] count / LIMIT count OFFSET offset
         var limit: ?i64 = null;
+        var offset: ?i64 = null;
         if (self.peek().type == .kw_limit) {
             _ = self.advance();
-            const limit_tok = self.advance();
-            if (limit_tok.type != .integer_literal) return ParseError.UnexpectedToken;
-            limit = std.fmt.parseInt(i64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            const first_tok = self.advance();
+            if (first_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+            const first_val = std.fmt.parseInt(i64, first_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            if (self.peek().type == .comma) {
+                // LIMIT offset, count syntax
+                _ = self.advance(); // consume comma
+                const second_tok = self.advance();
+                if (second_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+                offset = first_val;
+                limit = std.fmt.parseInt(i64, second_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            } else {
+                limit = first_val;
+            }
         }
-
-        // Parse optional OFFSET
-        var offset: ?i64 = null;
         if (self.peek().type == .kw_offset) {
             _ = self.advance();
             const offset_tok = self.advance();
@@ -2618,6 +2641,26 @@ pub const Parser = struct {
         return ParseError.UnexpectedToken;
     }
 
+    fn parsePragma(self: *Parser) ParseError!Statement {
+        _ = try self.expect(.kw_pragma);
+        // PRAGMA name or PRAGMA name(arg) or PRAGMA name = value
+        const name_tok = self.advance();
+        if (name_tok.type != .identifier and !isKeywordAsIdentifier(name_tok.type)) return ParseError.UnexpectedToken;
+        var arg: ?[]const u8 = null;
+        if (self.peek().type == .lparen) {
+            _ = self.advance(); // consume (
+            const arg_tok = self.advance();
+            arg = arg_tok.lexeme;
+            _ = try self.expect(.rparen);
+        } else if (self.peek().type == .equals) {
+            _ = self.advance(); // consume =
+            const val_tok = self.advance();
+            arg = val_tok.lexeme;
+        }
+        _ = try self.expect(.semicolon);
+        return Statement{ .pragma = .{ .name = name_tok.lexeme, .arg = arg } };
+    }
+
     fn parseBegin(self: *Parser) ParseError!Statement {
         _ = try self.expect(.kw_begin);
         // Optional TRANSACTION keyword
@@ -2809,14 +2852,22 @@ pub const Parser = struct {
         const order_by = if (self.peek().type == .kw_order) try self.parseOrderByClause() else null;
 
         var limit: ?i64 = null;
+        var offset: ?i64 = null;
         if (self.peek().type == .kw_limit) {
             _ = self.advance();
             const limit_tok = self.advance();
             if (limit_tok.type != .integer_literal) return ParseError.UnexpectedToken;
-            limit = std.fmt.parseInt(i64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            const first_val = std.fmt.parseInt(i64, limit_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            if (self.peek().type == .comma) {
+                _ = self.advance();
+                const second_tok = self.advance();
+                if (second_tok.type != .integer_literal) return ParseError.UnexpectedToken;
+                offset = first_val;
+                limit = std.fmt.parseInt(i64, second_tok.lexeme, 10) catch return ParseError.UnexpectedToken;
+            } else {
+                limit = first_val;
+            }
         }
-
-        var offset: ?i64 = null;
         if (self.peek().type == .kw_offset) {
             _ = self.advance();
             const offset_tok = self.advance();
