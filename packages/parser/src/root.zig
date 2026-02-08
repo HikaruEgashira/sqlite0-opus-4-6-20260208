@@ -174,6 +174,10 @@ pub const Expr = union(enum) {
         table: []const u8, // table name or alias
         column: []const u8, // column name
     },
+    exists: struct {
+        subquery_sql: []const u8,
+        negated: bool = false, // NOT EXISTS
+    },
 };
 
 pub const CastType = enum {
@@ -996,6 +1000,13 @@ pub const Parser = struct {
     fn parseNot(self: *Parser) ParseError!*const Expr {
         if (self.peek().type == .kw_not) {
             _ = self.advance();
+            // NOT EXISTS (...) → exists with negated=true
+            if (self.peek().type == .kw_exists) {
+                _ = self.advance();
+                _ = try self.expect(.lparen);
+                const sql = try self.extractSubquerySQL();
+                return self.allocExpr(.{ .exists = .{ .subquery_sql = sql, .negated = true } });
+            }
             const operand = try self.parseNot(); // right-associative
             return self.allocExpr(.{ .unary_op = .{ .op = .not, .operand = operand } });
         }
@@ -1197,6 +1208,14 @@ pub const Parser = struct {
             // Desugar -x to 0 - x
             const zero = try self.allocExpr(.{ .integer_literal = 0 });
             return self.allocExpr(.{ .binary_op = .{ .op = .sub, .left = zero, .right = operand } });
+        }
+
+        // EXISTS (SELECT ...) / NOT EXISTS (SELECT ...)
+        if (tok.type == .kw_exists) {
+            _ = self.advance(); // consume EXISTS
+            _ = try self.expect(.lparen);
+            const sql = try self.extractSubquerySQL();
+            return self.allocExpr(.{ .exists = .{ .subquery_sql = sql, .negated = false } });
         }
 
         // CASE WHEN expression

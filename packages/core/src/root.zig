@@ -401,6 +401,18 @@ pub const Database = struct {
                 // Deep copy text to let caller free uniformly
                 return if (result == .text) .{ .text = try dupeStr(self.allocator, result.text) } else result;
             },
+            .exists => |ex| {
+                const sub_values = try self.executeSubquery(ex.subquery_sql);
+                defer if (sub_values) |sv| {
+                    for (sv) |v| {
+                        if (v == .text) self.allocator.free(v.text);
+                    }
+                    self.allocator.free(sv);
+                };
+                const has_rows = sub_values != null and sub_values.?.len > 0;
+                const result = if (ex.negated) !has_rows else has_rows;
+                return .{ .integer = if (result) 1 else 0 };
+            },
             .scalar_func => |sf| {
                 return self.evalScalarFunc(sf.func, sf.args, tbl, row);
             },
@@ -952,6 +964,9 @@ pub const Database = struct {
             },
             .scalar_subquery => |sq| {
                 self.allocator.free(@constCast(sq.subquery_sql));
+            },
+            .exists => |ex| {
+                self.allocator.free(@constCast(ex.subquery_sql));
             },
             .scalar_func => |sf| {
                 for (sf.args) |arg| self.freeExprDeep(arg);
