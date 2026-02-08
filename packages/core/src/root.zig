@@ -42,6 +42,8 @@ const rowsEqual = value_mod.rowsEqual;
 const likeMatch = value_mod.likeMatch;
 const globMatch = value_mod.globMatch;
 
+const AliasOffset = struct { name: []const u8, alias: []const u8, offset: usize, table: *const Table };
+
 pub const Database = struct {
     tables: std.StringHashMap(Table),
     views: std.StringHashMap([]const u8), // view_name -> SELECT SQL
@@ -64,6 +66,8 @@ pub const Database = struct {
     } = null,
     // Current table alias (for correlated subquery context)
     current_table_alias: ?[]const u8 = null,
+    // JOIN alias offsets for resolving qualified aggregate column refs
+    join_alias_offsets: ?[]const AliasOffset = null,
 
     pub fn init(allocator: std.mem.Allocator) Database {
         return .{
@@ -591,7 +595,12 @@ pub const Database = struct {
             .aggregate => |agg| {
                 const arg_name: []const u8 = switch (agg.arg.*) {
                     .column_ref => |name| name,
-                    .qualified_ref => |qr| qr.column,
+                    .qualified_ref => |qr| blk: {
+                        // Use pointer arithmetic to get "table.column" as source slice
+                        const start = qr.table.ptr;
+                        const end = qr.column.ptr + qr.column.len;
+                        break :blk start[0..@intFromPtr(end) - @intFromPtr(start)];
+                    },
                     .star => "*",
                     else => return .null_val,
                 };
@@ -2907,12 +2916,34 @@ pub const Database = struct {
         return .{ .text = txt };
     }
 
+    /// Resolve a column argument for aggregate (handles both "col" and "table.col" formats)
+    fn resolveAggColIdx(self: *const Database, tbl: *const Table, arg: []const u8) ?usize {
+        if (tbl.findColumnIndex(arg)) |idx| return idx;
+        // If arg is "alias.col", use join_alias_offsets to resolve
+        if (std.mem.indexOf(u8, arg, ".")) |dot_pos| {
+            const alias = arg[0..dot_pos];
+            const col = arg[dot_pos + 1 ..];
+            if (self.join_alias_offsets) |offsets| {
+                for (offsets) |ao| {
+                    if (std.mem.eql(u8, ao.alias, alias) or std.mem.eql(u8, ao.name, alias)) {
+                        if (ao.table.findColumnIndex(col)) |ci| {
+                            return ao.offset + ci;
+                        }
+                    }
+                }
+            }
+            // Fallback: try just the column part
+            return tbl.findColumnIndex(col);
+        }
+        return null;
+    }
+
     fn computeAgg(self: *Database, func: AggFunc, arg: []const u8, tbl: *const Table, rows: []const Row, separator: []const u8, is_distinct: bool) !Value {
         if (func == .count) {
             if (std.mem.eql(u8, arg, "*")) {
                 return .{ .integer = @intCast(rows.len) };
             }
-            const col_idx = tbl.findColumnIndex(arg) orelse return error.UnexpectedToken;
+            const col_idx = self.resolveAggColIdx(tbl, arg) orelse return error.UnexpectedToken;
             if (is_distinct) {
                 // COUNT(DISTINCT col): count unique non-null values
                 var seen_ints: std.ArrayList(i64) = .{};
@@ -2952,7 +2983,7 @@ pub const Database = struct {
             return .{ .integer = cnt };
         }
 
-        const col_idx = tbl.findColumnIndex(arg) orelse return error.UnexpectedToken;
+        const col_idx = self.resolveAggColIdx(tbl, arg) orelse return error.UnexpectedToken;
 
         switch (func) {
             .sum => {
@@ -4105,7 +4136,7 @@ pub const Database = struct {
         }
 
         // Track alias mapping: alias/name -> column offset in combined row
-        var alias_offsets: std.ArrayList(struct { name: []const u8, alias: []const u8, offset: usize, table: *const Table }) = .{};
+        var alias_offsets: std.ArrayList(AliasOffset) = .{};
         defer alias_offsets.deinit(self.allocator);
         try alias_offsets.append(self.allocator, .{
             .name = sel.table_name,
@@ -4367,10 +4398,9 @@ pub const Database = struct {
             const combined_cols = try self.allocator.alloc(Column, combined_cols_list.items.len);
             @memcpy(combined_cols, combined_cols_list.items);
             var tmp_table = Table.init(self.allocator, "joined", combined_cols);
-            // Register alias column offsets for qualified refs
-            for (alias_offsets.items) |ao| {
-                _ = ao;
-            }
+            // Store alias offsets for resolving qualified column references in aggregates
+            self.join_alias_offsets = alias_offsets.items;
+            defer self.join_alias_offsets = null;
             const agg_result = try self.executeAggregate(&tmp_table, sel, result_rows);
             self.allocator.free(combined_cols);
             for (joined_values.items) |v| self.allocator.free(v);

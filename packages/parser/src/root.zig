@@ -2133,7 +2133,12 @@ pub const Parser = struct {
             .aggregate => |agg| {
                 const arg_name: []const u8 = switch (agg.arg.*) {
                     .column_ref => |name| name,
-                    .qualified_ref => |qr| qr.column,
+                    .qualified_ref => |qr| blk: {
+                        // Use pointer arithmetic to get "table.column" as source slice
+                        const start = qr.table.ptr;
+                        const end = qr.column.ptr + qr.column.len;
+                        break :blk start[0..@intFromPtr(end) - @intFromPtr(start)];
+                    },
                     .star => "*",
                     else => return null,
                 };
