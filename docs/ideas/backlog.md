@@ -16,10 +16,10 @@
 - ~~NULL値の適切なハンドリング~~ ✓
 - ~~ALTER TABLE~~ ✓
 - ~~Expression Evaluation（算術式、文字列結合、括弧）~~ ✓
-- INSERT INTO ... SELECT
+- ~~INSERT INTO ... SELECT~~ ✓
 - ~~CASE WHEN式~~ ✓
-- ~~LIKE演算子~~ ✓ / GLOB演算子
-- UNION / UNION ALL / INTERSECT / EXCEPT
+- ~~LIKE演算子~~ ✓ / ~~GLOB演算子~~ ✓
+- ~~UNION / UNION ALL / INTERSECT / EXCEPT~~ ✓
 - ~~複数カラムのUPDATE SET~~ ✓
 - ~~比較演算子を式として使用~~ ✓
 - ~~WHERE句の式ベース化（AND/ORを含む完全なExpr化）~~ ✓
