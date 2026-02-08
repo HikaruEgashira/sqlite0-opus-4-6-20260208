@@ -2854,7 +2854,36 @@ pub const Database = struct {
             // Evaluate GROUP BY expressions for this row
             var row_key = try self.allocator.alloc(Value, gb_exprs.len);
             for (gb_exprs, 0..) |expr, ki| {
-                row_key[ki] = try self.evalExpr(expr, tbl, row);
+                // Handle GROUP BY column position (e.g., GROUP BY 1, 2)
+                if (expr.* == .integer_literal) {
+                    const pos = expr.integer_literal;
+                    if (pos >= 1 and pos <= @as(i64, @intCast(sel.select_exprs.len))) {
+                        const sel_idx: usize = @intCast(pos - 1);
+                        // Resolve SELECT list column to table column
+                        switch (sel.select_exprs[sel_idx]) {
+                            .column => |col_name| {
+                                if (tbl.findColumnIndex(col_name)) |ci| {
+                                    row_key[ki] = row.values[ci];
+                                    if (row_key[ki] == .text) {
+                                        row_key[ki] = .{ .text = try dupeStr(self.allocator, row_key[ki].text) };
+                                    }
+                                } else {
+                                    row_key[ki] = .null_val;
+                                }
+                            },
+                            .expr => |e| {
+                                row_key[ki] = try self.evalExpr(e, tbl, row);
+                            },
+                            else => {
+                                row_key[ki] = .null_val;
+                            },
+                        }
+                    } else {
+                        row_key[ki] = .null_val;
+                    }
+                } else {
+                    row_key[ki] = try self.evalExpr(expr, tbl, row);
+                }
             }
 
             var found_idx: ?usize = null;
@@ -2933,6 +2962,14 @@ pub const Database = struct {
         var gb_sort_indices: std.ArrayList(usize) = .{};
         defer gb_sort_indices.deinit(self.allocator);
         for (gb_exprs) |gb_expr| {
+            // Handle GROUP BY column position (e.g., GROUP BY 1)
+            if (gb_expr.* == .integer_literal) {
+                const pos = gb_expr.integer_literal;
+                if (pos >= 1 and pos <= @as(i64, @intCast(sel.select_exprs.len))) {
+                    gb_sort_indices.append(self.allocator, @intCast(pos - 1)) catch {};
+                }
+                continue;
+            }
             // Extract column name from simple column_ref expression
             const gb_col_name: ?[]const u8 = switch (gb_expr.*) {
                 .column_ref => |name| name,
