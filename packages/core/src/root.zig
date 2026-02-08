@@ -3425,6 +3425,72 @@ pub const Database = struct {
                         if (pos >= 1 and pos <= @as(i64, @intCast(n_proj_cols))) {
                             col_idx = @intCast(pos - 1);
                         }
+                    } else if (e.* == .qualified_ref) {
+                        // Resolve qualified_ref against projected columns
+                        const qr = e.qualified_ref;
+                        for (sel.result_exprs, 0..) |re, ei| {
+                            if (re.* == .qualified_ref) {
+                                const re_qr = re.qualified_ref;
+                                if (std.mem.eql(u8, qr.table, re_qr.table) and std.mem.eql(u8, qr.column, re_qr.column)) {
+                                    col_idx = ei;
+                                    break;
+                                }
+                            } else if (re.* == .column_ref) {
+                                if (std.mem.eql(u8, qr.column, re.column_ref)) {
+                                    col_idx = ei;
+                                    break;
+                                }
+                            }
+                        }
+                        // Also check aliases
+                        if (col_idx == null) {
+                            for (sel.aliases, 0..) |alias, ai| {
+                                if (alias) |a| {
+                                    if (std.ascii.eqlIgnoreCase(qr.column, a)) {
+                                        col_idx = ai;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        // Also check select_exprs column names
+                        if (col_idx == null) {
+                            for (sel.select_exprs, 0..) |sexpr, ei| {
+                                switch (sexpr) {
+                                    .column => |col_name| {
+                                        if (std.mem.eql(u8, col_name, qr.column)) {
+                                            col_idx = ei;
+                                            break;
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                    } else if (e.* == .column_ref) {
+                        // Simple column ref in expr — resolve like alias
+                        const name = e.column_ref;
+                        for (sel.aliases, 0..) |alias, ai| {
+                            if (alias) |a| {
+                                if (std.ascii.eqlIgnoreCase(name, a)) {
+                                    col_idx = ai;
+                                    break;
+                                }
+                            }
+                        }
+                        if (col_idx == null) {
+                            for (sel.select_exprs, 0..) |sexpr, ei| {
+                                switch (sexpr) {
+                                    .column => |col_name| {
+                                        if (std.mem.eql(u8, col_name, name)) {
+                                            col_idx = ei;
+                                            break;
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
                     }
                 }
                 if (col_idx == null and item.column.len > 0) {
