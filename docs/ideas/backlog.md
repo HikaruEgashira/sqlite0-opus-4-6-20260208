@@ -89,6 +89,11 @@
 - ~~FROM句サブクエリ（導出テーブル）~~ ✓
 - ~~UNIQUE制約構文~~ ✓
 - ~~複合PRIMARY KEY~~ ✓
+- ~~ORDER BY列位置番号（ORDER BY 2 DESC）~~ ✓
+- ~~GROUP BY列位置番号（GROUP BY 1, 2）~~ ✓
+- ~~SUM/AVG/TOTAL浮動小数点対応~~ ✓
+- ~~型なしカラム（CREATE TABLE t (val)）~~ ✓
+- ~~VALUES式（INSERT VALUES (1+'a'||'b', UPPER('x'))）~~ ✓
 
 ## ストレージ
 - B-Tree ベースのページ管理 ← Phase 6d

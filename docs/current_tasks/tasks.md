@@ -137,6 +137,15 @@
 - [x] UNION/INTERSECT/EXCEPT結果のメモリリーク修正（projected_values追跡）
 - Differential Test: **148/148 passing**
 
+### Phase 6d-15: SQL機能充実・バグ修正（完了）
+- [x] ORDER BY column position numbers (ORDER BY 2 DESC)
+- [x] GROUP BY column position numbers (GROUP BY 1, 2)
+- [x] SUM/AVG/TOTAL aggregate on float values (valueToF64)
+- [x] MIN/MAX text value duplication (prevent table data corruption)
+- [x] Optional column types in CREATE TABLE (e.g., CREATE TABLE t (val))
+- [x] Expressions in INSERT VALUES (string concat, arithmetic, functions)
+- Differential Test: **154/154 passing**
+
 ### 次のステップ
 
 ### Phase 6d-3: インメモリB-Tree実装（予定）
