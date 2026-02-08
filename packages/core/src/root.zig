@@ -55,6 +55,15 @@ pub const Database = struct {
     // Transaction state
     in_transaction: bool = false,
     transaction_snapshot: ?[]TableSnapshot = null,
+    // Outer context for correlated subqueries
+    outer_context: ?struct {
+        table: *const Table,
+        row: Row,
+        table_name: []const u8,
+        table_alias: ?[]const u8,
+    } = null,
+    // Current table alias (for correlated subquery context)
+    current_table_alias: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) Database {
         return .{
@@ -266,12 +275,32 @@ pub const Database = struct {
             .null_literal => return .null_val,
             .star => return .null_val, // star is not valid in eval context
             .column_ref => |name| {
-                const col_idx = tbl.findColumnIndex(name) orelse return .null_val;
-                const val = row.values[col_idx];
-                // Deep copy text values so caller can free them uniformly
-                return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+                if (tbl.findColumnIndex(name)) |col_idx| {
+                    const val = row.values[col_idx];
+                    return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+                }
+                // Fallback: check outer context for correlated subqueries
+                if (self.outer_context) |ctx| {
+                    if (ctx.table.findColumnIndex(name)) |outer_idx| {
+                        const val = ctx.row.values[outer_idx];
+                        return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+                    }
+                }
+                return .null_val;
             },
             .qualified_ref => |qr| {
+                // Check if qualified ref matches outer context table
+                if (self.outer_context) |ctx| {
+                    const matches_outer = std.mem.eql(u8, qr.table, ctx.table_name) or
+                        (if (ctx.table_alias) |a| std.mem.eql(u8, qr.table, a) else false);
+                    if (matches_outer) {
+                        if (ctx.table.findColumnIndex(qr.column)) |outer_idx| {
+                            const val = ctx.row.values[outer_idx];
+                            return if (val == .text) .{ .text = try dupeStr(self.allocator, val.text) } else val;
+                        }
+                        return .null_val;
+                    }
+                }
                 // For non-JOIN context, just use the column name
                 const col_idx = tbl.findColumnIndex(qr.column) orelse return .null_val;
                 const val = row.values[col_idx];
@@ -461,6 +490,11 @@ pub const Database = struct {
                 defer if (operand_val == .text) self.allocator.free(operand_val.text);
                 if (operand_val == .null_val) return .null_val;
 
+                // Set outer context for correlated subqueries
+                const saved_outer = self.outer_context;
+                self.outer_context = .{ .table = tbl, .row = row, .table_name = tbl.name, .table_alias = self.current_table_alias };
+                defer self.outer_context = saved_outer;
+
                 const sub_values = try self.executeSubquery(il.subquery_sql);
                 defer if (sub_values) |sv| {
                     for (sv) |v| {
@@ -489,6 +523,11 @@ pub const Database = struct {
                 return .{ .integer = 0 };
             },
             .scalar_subquery => |sq| {
+                // Set outer context for correlated subqueries
+                const saved_outer = self.outer_context;
+                self.outer_context = .{ .table = tbl, .row = row, .table_name = tbl.name, .table_alias = self.current_table_alias };
+                defer self.outer_context = saved_outer;
+
                 const sub_values = try self.executeSubquery(sq.subquery_sql);
                 defer if (sub_values) |sv| {
                     for (sv) |v| {
@@ -503,6 +542,11 @@ pub const Database = struct {
                 return if (result == .text) .{ .text = try dupeStr(self.allocator, result.text) } else result;
             },
             .exists => |ex| {
+                // Set outer context for correlated subqueries
+                const saved_outer = self.outer_context;
+                self.outer_context = .{ .table = tbl, .row = row, .table_name = tbl.name, .table_alias = self.current_table_alias };
+                defer self.outer_context = saved_outer;
+
                 const sub_values = try self.executeSubquery(ex.subquery_sql);
                 defer if (sub_values) |sv| {
                     for (sv) |v| {
@@ -547,6 +591,7 @@ pub const Database = struct {
             .aggregate => |agg| {
                 const arg_name: []const u8 = switch (agg.arg.*) {
                     .column_ref => |name| name,
+                    .qualified_ref => |qr| qr.column,
                     .star => "*",
                     else => return .null_val,
                 };
@@ -3514,6 +3559,11 @@ pub const Database = struct {
         }
 
         if (self.tables.get(sel.table_name)) |table| {
+            // Set current table alias for correlated subquery context
+            const saved_alias = self.current_table_alias;
+            self.current_table_alias = sel.table_alias;
+            defer self.current_table_alias = saved_alias;
+
             // Collect matching rows (with optional WHERE filter)
             var matching_rows: std.ArrayList(Row) = .{};
             defer matching_rows.deinit(self.allocator);

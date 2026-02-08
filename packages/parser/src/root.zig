@@ -2133,6 +2133,7 @@ pub const Parser = struct {
             .aggregate => |agg| {
                 const arg_name: []const u8 = switch (agg.arg.*) {
                     .column_ref => |name| name,
+                    .qualified_ref => |qr| qr.column,
                     .star => "*",
                     else => return null,
                 };
